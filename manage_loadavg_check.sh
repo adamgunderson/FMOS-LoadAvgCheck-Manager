@@ -268,7 +268,21 @@ show_status() {
 toggle_logging() {
     if [ "$1" = "on" ]; then
         echo "Enabling logging..."
-        # Update cronjob to remove NO_LOG
+        # Update cronjob to add NO_LOG=0 for logging
+        if crontab -l 2>/dev/null | grep -q "$SCRIPT_PATH disable"; then
+            minute=$(crontab -l | grep "$SCRIPT_PATH disable" | awk '{print $1}')
+            hour=$(crontab -l | grep "$SCRIPT_PATH disable" | awk '{print $2}')
+            cron_entry="$minute $hour * * * NO_LOG=0 $SCRIPT_PATH disable >/dev/null 2>&1"
+            (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH disable" || true; echo "$cron_entry") | crontab -
+        fi
+        # Update post-backup
+        post_backup_cmd="NO_LOG=0 $SCRIPT_PATH enable"
+        echo "{\"post_backup\":{\"failure\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]},\"success\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]}}}" | \
+            fmos config put os/backup/post-backup - && fmos config apply all
+        echo "Logging has been enabled"
+    elif [ "$1" = "off" ]; then
+        echo "Disabling logging..."
+        # Update cronjob to remove NO_LOG (defaults to disabled)
         if crontab -l 2>/dev/null | grep -q "$SCRIPT_PATH disable"; then
             minute=$(crontab -l | grep "$SCRIPT_PATH disable" | awk '{print $1}')
             hour=$(crontab -l | grep "$SCRIPT_PATH disable" | awk '{print $2}')
@@ -279,21 +293,7 @@ toggle_logging() {
         post_backup_cmd="$SCRIPT_PATH enable"
         echo "{\"post_backup\":{\"failure\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]},\"success\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]}}}" | \
             fmos config put os/backup/post-backup - && fmos config apply all
-        echo "Logging has been enabled"
-    elif [ "$1" = "off" ]; then
-        echo "Disabling logging..."
-        # Update cronjob to add NO_LOG
-        if crontab -l 2>/dev/null | grep -q "$SCRIPT_PATH disable"; then
-            minute=$(crontab -l | grep "$SCRIPT_PATH disable" | awk '{print $1}')
-            hour=$(crontab -l | grep "$SCRIPT_PATH disable" | awk '{print $2}')
-            cron_entry="$minute $hour * * * NO_LOG=1 $SCRIPT_PATH disable >/dev/null 2>&1"
-            (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH disable" || true; echo "$cron_entry") | crontab -
-        fi
-        # Update post-backup
-        post_backup_cmd="NO_LOG=1 $SCRIPT_PATH enable"
-        echo "{\"post_backup\":{\"failure\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]},\"success\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]}}}" | \
-            fmos config put os/backup/post-backup - && fmos config apply all
-        echo "Logging has been disabled"
+        echo "Logging has been disabled (back to default)"
     else
         echo "Usage: $0 logging {on|off}"
         exit 1
