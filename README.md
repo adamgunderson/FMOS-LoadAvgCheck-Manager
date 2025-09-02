@@ -28,7 +28,7 @@ During FMOS backup operations, system load can spike significantly, triggering t
 
 ```bash
 # Download the script directly to your home directory
-wget -O ~/manage_loadavg_check.sh https://raw.githubusercontent.com/your-org/fmos-scripts/main/manage_loadavg_check.sh
+wget -O ~/manage_loadavg_check.sh https://raw.githubusercontent.com/adamgunderson/FMOS-LoadAvgCheck-Manager/main/manage_loadavg_check.sh
 
 # Make it executable (note: may need to run with bash due to FMOS security)
 chmod +x ~/manage_loadavg_check.sh
