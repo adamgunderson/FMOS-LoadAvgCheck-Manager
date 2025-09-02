@@ -83,9 +83,11 @@ bash ~/manage_loadavg_check.sh cleanup
 # Show current status and configuration
 bash ~/manage_loadavg_check.sh status
 
-# Toggle logging on or off
-bash ~/manage_loadavg_check.sh logging off
+# Toggle logging on for debugging
 bash ~/manage_loadavg_check.sh logging on
+
+# Toggle logging off (return to silent mode)
+bash ~/manage_loadavg_check.sh logging off
 ```
 
 ### Logging Options
@@ -228,7 +230,7 @@ For issues or questions:
 
 ## License
 
-This script is provided as-is for use with FMOS. Modify as needed for your environment.
+This script is provided as-is for use with FireMon OS systems. Modify as needed for your environment.
 
 ## Contributing
 
