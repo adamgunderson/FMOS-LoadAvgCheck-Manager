@@ -230,7 +230,7 @@ For issues or questions:
 
 ## License
 
-This script is provided as-is for use with FireMon OS systems. Modify as needed for your environment.
+This script is provided as-is for use with FMOS systems. Modify as needed for your environment.
 
 ## Contributing
 
