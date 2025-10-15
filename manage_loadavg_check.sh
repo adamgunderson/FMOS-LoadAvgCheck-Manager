@@ -254,6 +254,9 @@ log_message() {
 disable_check() {
     log_message "Starting: Disabling $CHECK_NAME"
 
+    # Check if cronjob schedule needs updating
+    check_and_update_cronjob
+
     # Login to API
     api_login
 
@@ -282,6 +285,9 @@ disable_check() {
 # Function to enable LoadAvgCheck (remove from ignore list)
 enable_check() {
     log_message "Starting: Enabling $CHECK_NAME"
+
+    # Check if cronjob schedule needs updating
+    check_and_update_cronjob
 
     # Login to API
     api_login
@@ -318,18 +324,11 @@ enable_check() {
 setup_post_backup() {
     log_message "Setting up post-backup script execution"
 
-    # Copy script to /tmp to avoid noexec issues on /home
-    # /tmp typically allows execution even on locked-down appliances
-    local tmp_script="/tmp/manage_loadavg_check.sh"
-    cp "$SCRIPT_PATH" "$tmp_script"
-    chmod +x "$tmp_script"
-
-    log_message "Script copied to $tmp_script (bypasses /home noexec restrictions)"
-
-    # Use the /tmp copy for post-backup execution
-    post_backup_cmd="/bin/bash $tmp_script enable"
+    # Use the script directly from its current location
+    # bash can read scripts even from noexec filesystems
+    post_backup_cmd="/bin/bash $SCRIPT_PATH enable"
     if [ "$NO_LOG" = "1" ]; then
-        post_backup_cmd="NO_LOG=1 /bin/bash $tmp_script enable"
+        post_backup_cmd="NO_LOG=1 /bin/bash $SCRIPT_PATH enable"
     fi
 
     # Create the post-backup configuration
@@ -360,10 +359,83 @@ EOF
     api_config_put "os/backup/post-backup" "$post_backup_config" && api_config_apply
 
     if [ $? -eq 0 ]; then
-        log_message "Success: Post-backup script execution configured (using $tmp_script)"
+        log_message "Success: Post-backup script execution configured"
+        log_message "Post-backup command: $post_backup_cmd"
     else
         log_message "Error: Failed to configure post-backup script execution"
         return 1
+    fi
+}
+
+# Function to get backup schedule and calculate pre-backup time
+get_backup_schedule() {
+    # Get current backup schedule
+    api_login
+    local backup_config=$(api_config_get "os/backup/auto-backup")
+    [ -z "$backup_config" ] && backup_config="{}"
+
+    # Extract backup time (defaults if not set)
+    if [ "$backup_config" = "{}" ]; then
+        # Use default time
+        BACKUP_HOUR=23
+        BACKUP_MINUTE=48
+        BACKUP_SCHEDULE="daily"
+    else
+        BACKUP_HOUR=$(echo "$backup_config" | jq -r '.auto_backup.hour // 23')
+        BACKUP_MINUTE=$(echo "$backup_config" | jq -r '.auto_backup.minute // 48')
+        BACKUP_SCHEDULE=$(echo "$backup_config" | jq -r '.auto_backup.schedule // "daily"')
+    fi
+
+    # Calculate time 5 minutes before backup
+    PRE_BACKUP_MINUTE=$((BACKUP_MINUTE - 5))
+    PRE_BACKUP_HOUR=$BACKUP_HOUR
+
+    if [ $PRE_BACKUP_MINUTE -lt 0 ]; then
+        PRE_BACKUP_MINUTE=$((60 + PRE_BACKUP_MINUTE))
+        PRE_BACKUP_HOUR=$((BACKUP_HOUR - 1))
+        if [ $PRE_BACKUP_HOUR -lt 0 ]; then
+            PRE_BACKUP_HOUR=23
+        fi
+    fi
+}
+
+# Function to check if cronjob needs updating
+check_and_update_cronjob() {
+    # Get current backup schedule
+    get_backup_schedule
+
+    # Check if cronjob exists
+    if ! crontab -l 2>/dev/null | grep -q "$SCRIPT_PATH disable"; then
+        log_message "INFO: Cronjob not configured, skipping schedule check"
+        return 0
+    fi
+
+    # Get current cronjob schedule
+    local current_cron=$(crontab -l 2>/dev/null | grep "$SCRIPT_PATH disable" | head -1)
+    local current_minute=$(echo "$current_cron" | awk '{print $1}')
+    local current_hour=$(echo "$current_cron" | awk '{print $2}')
+
+    # Check if schedule has changed
+    if [ "$current_minute" != "$PRE_BACKUP_MINUTE" ] || [ "$current_hour" != "$PRE_BACKUP_HOUR" ]; then
+        log_message "INFO: Backup schedule changed, updating cronjob"
+        log_message "Old schedule: $current_hour:$(printf '%02d' $current_minute)"
+        log_message "New schedule: $PRE_BACKUP_HOUR:$(printf '%02d' $PRE_BACKUP_MINUTE)"
+
+        # Create new cronjob entry
+        local cron_entry
+        if echo "$current_cron" | grep -q "NO_LOG=1"; then
+            cron_entry="$PRE_BACKUP_MINUTE $PRE_BACKUP_HOUR * * * NO_LOG=1 /bin/bash $SCRIPT_PATH disable >/dev/null 2>&1"
+        else
+            cron_entry="$PRE_BACKUP_MINUTE $PRE_BACKUP_HOUR * * * /bin/bash $SCRIPT_PATH disable >/dev/null 2>&1"
+        fi
+
+        # Update crontab
+        (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH disable" || true; echo "$cron_entry") | crontab -
+        log_message "Cronjob updated: $cron_entry"
+
+        echo "⚠ Backup schedule has changed!"
+        echo "  Backup is now at: $BACKUP_HOUR:$(printf '%02d' $BACKUP_MINUTE)"
+        echo "  Cronjob updated to: $PRE_BACKUP_HOUR:$(printf '%02d' $PRE_BACKUP_MINUTE)"
     fi
 }
 
@@ -371,79 +443,38 @@ EOF
 setup_cronjob() {
     log_message "Setting up cronjob for pre-backup check disable"
 
-    # Get current backup schedule
-    api_login
-    backup_config=$(api_config_get "os/backup/auto-backup")
-    [ -z "$backup_config" ] && backup_config="{}"
+    # Get backup schedule
+    get_backup_schedule
 
-    
-    # Extract backup time (defaults if not set)
-    if [ "$backup_config" = "{}" ]; then
-        # Use default time
-        backup_hour=23
-        backup_minute=48
-        schedule="daily"
-    else
-        backup_hour=$(echo "$backup_config" | jq -r '.auto_backup.hour // 23')
-        backup_minute=$(echo "$backup_config" | jq -r '.auto_backup.minute // 48')
-        schedule=$(echo "$backup_config" | jq -r '.auto_backup.schedule // "daily"')
-    fi
-    
-    # Calculate time 5 minutes before backup
-    pre_backup_minute=$((backup_minute - 5))
-    pre_backup_hour=$backup_hour
-    
-    if [ $pre_backup_minute -lt 0 ]; then
-        pre_backup_minute=$((60 + pre_backup_minute))
-        pre_backup_hour=$((backup_hour - 1))
-        if [ $pre_backup_hour -lt 0 ]; then
-            pre_backup_hour=23
-        fi
-    fi
-    
     # Create cronjob entry with output redirected to /dev/null
     # Use explicit bash interpreter to avoid permission issues
     # Include NO_LOG environment variable if logging is disabled
     if [ "$NO_LOG" = "1" ]; then
-        cron_entry="$pre_backup_minute $pre_backup_hour * * * NO_LOG=1 /bin/bash $SCRIPT_PATH disable >/dev/null 2>&1"
+        cron_entry="$PRE_BACKUP_MINUTE $PRE_BACKUP_HOUR * * * NO_LOG=1 /bin/bash $SCRIPT_PATH disable >/dev/null 2>&1"
     else
-        cron_entry="$pre_backup_minute $pre_backup_hour * * * /bin/bash $SCRIPT_PATH disable >/dev/null 2>&1"
+        cron_entry="$PRE_BACKUP_MINUTE $PRE_BACKUP_HOUR * * * /bin/bash $SCRIPT_PATH disable >/dev/null 2>&1"
     fi
-    
+
     # Add to crontab (avoiding duplicates)
     (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH disable" || true; echo "$cron_entry") | crontab -
 
     log_message "Cronjob configured: $cron_entry"
-    echo "Backup is scheduled at: $backup_hour:$(printf '%02d' $backup_minute)"
-    echo "LoadAvgCheck will be disabled at: $pre_backup_hour:$(printf '%02d' $pre_backup_minute)"
-
-    # Add @reboot entry to sync script to /tmp after system reboots
-    # This ensures the /tmp copy is recreated after reboots (since /tmp is cleared)
-    reboot_entry="@reboot sleep 60 && /bin/bash $SCRIPT_PATH sync >/dev/null 2>&1"
-
-    # Remove any existing @reboot entry for this script and add the new one
-    (crontab -l 2>/dev/null | grep -v "@reboot.*$SCRIPT_PATH" || true; echo "$reboot_entry") | crontab -
-
-    log_message "Reboot sync configured: $reboot_entry"
-    echo "Post-reboot sync will recreate /tmp copy after system reboots"
+    echo "Backup is scheduled at: $BACKUP_HOUR:$(printf '%02d' $BACKUP_MINUTE)"
+    echo "LoadAvgCheck will be disabled at: $PRE_BACKUP_HOUR:$(printf '%02d' $PRE_BACKUP_MINUTE)"
 }
 
 # Function to remove all setup
 cleanup_setup() {
     log_message "Removing all setup configurations"
 
-    # Remove cronjobs (both pre-backup and @reboot entries)
-    crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH disable" | grep -v "@reboot.*$SCRIPT_PATH" | crontab - || true
-    log_message "Cronjobs removed (pre-backup and @reboot)"
+    # Remove cronjob
+    crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH disable" | crontab - || true
+    log_message "Cronjob removed"
 
     # Clear post-backup configuration
     api_login
     api_config_put "os/backup/post-backup" '{"post_backup": {}}' && api_config_apply
     log_message "Post-backup configuration cleared"
-
-    # Remove /tmp copy
-    rm -f /tmp/manage_loadavg_check.sh 2>/dev/null || true
-    log_message "Removed /tmp script copy"
 
     # Remove stored credentials
     if [ -f "$API_CREDS_FILE" ]; then
@@ -453,23 +484,6 @@ cleanup_setup() {
 
     # Ensure check is enabled
     enable_check
-}
-
-# Function to sync script to /tmp
-sync_to_tmp() {
-    local tmp_script="/tmp/manage_loadavg_check.sh"
-    log_message "Syncing script to $tmp_script"
-
-    cp "$SCRIPT_PATH" "$tmp_script"
-    chmod +x "$tmp_script"
-
-    if [ $? -eq 0 ]; then
-        log_message "Success: Script synced to /tmp"
-        echo "Script synced to /tmp (required after any script updates)"
-    else
-        log_message "Error: Failed to sync script to /tmp"
-        return 1
-    fi
 }
 
 # Function to show current status
@@ -491,30 +505,20 @@ show_status() {
     fi
     echo
 
-    # Check /tmp copy status
-    echo "Script Locations:"
-    echo "  Source: $SCRIPT_PATH"
-    if [ -f "/tmp/manage_loadavg_check.sh" ]; then
-        tmp_age=$(stat -c %Y "/tmp/manage_loadavg_check.sh" 2>/dev/null || echo "0")
-        src_age=$(stat -c %Y "$SCRIPT_PATH" 2>/dev/null || echo "0")
-        if [ "$tmp_age" -lt "$src_age" ]; then
-            echo "  /tmp copy: EXISTS (⚠ OUTDATED - run 'sync' command)"
-        else
-            echo "  /tmp copy: EXISTS (✓ up to date)"
-        fi
-    else
-        echo "  /tmp copy: MISSING (⚠ run 'setup' or 'sync' command)"
-    fi
+    # Show script location
+    echo "Script Location:"
+    echo "  $SCRIPT_PATH"
     echo
 
-    # Show detected admin user
-    echo "Execution Context:"
-    echo "  Current user: $(whoami)"
-    echo "  Detected admin user: $ADMIN_USER"
-    if [ "$(id -u)" = "0" ]; then
-        echo "  Running as: root (will switch to '$ADMIN_USER' for fmos commands)"
+    # Show API authentication status
+    echo "API Authentication:"
+    if [ -f "$API_CREDS_FILE" ]; then
+        get_stored_credentials
+        echo "  Stored credentials: ✓ (user: $STORED_USER)"
+    elif [ -n "${FMOS_API_USER:-}" ] && [ -n "${FMOS_API_PASS:-}" ]; then
+        echo "  Environment variables: ✓ (user: $FMOS_API_USER)"
     else
-        echo "  Running as: normal user (fmos commands run directly)"
+        echo "  No credentials configured"
     fi
     echo
     
@@ -535,24 +539,32 @@ show_status() {
     fi
     echo
     
-    # Show cronjob
+    # Show cronjob with schedule validation
     echo "Cronjob Status:"
     if crontab -l 2>/dev/null | grep -q "$SCRIPT_PATH disable"; then
-        echo "  Pre-backup disable:"
-        crontab -l | grep "$SCRIPT_PATH disable" | while read line; do
-            echo "    $line"
-        done
-    else
-        echo "  Pre-backup: No cronjob configured"
-    fi
+        # Get current backup schedule
+        get_backup_schedule 2>/dev/null || true
 
-    if crontab -l 2>/dev/null | grep -q "@reboot.*$SCRIPT_PATH"; then
-        echo "  Post-reboot sync:"
-        crontab -l | grep "@reboot.*$SCRIPT_PATH" | while read line; do
-            echo "    $line"
-        done
+        # Get current cronjob schedule
+        local current_cron=$(crontab -l 2>/dev/null | grep "$SCRIPT_PATH disable" | head -1)
+        local current_minute=$(echo "$current_cron" | awk '{print $1}')
+        local current_hour=$(echo "$current_cron" | awk '{print $2}')
+
+        # Display cronjob
+        echo "  $current_cron"
+
+        # Check if schedule matches current backup time
+        if [ -n "$PRE_BACKUP_MINUTE" ] && [ -n "$PRE_BACKUP_HOUR" ]; then
+            if [ "$current_minute" != "$PRE_BACKUP_MINUTE" ] || [ "$current_hour" != "$PRE_BACKUP_HOUR" ]; then
+                echo ""
+                echo "  ⚠ WARNING: Cronjob schedule is out of sync!"
+                echo "  Current cronjob: $current_hour:$(printf '%02d' $current_minute)"
+                echo "  Should be:       $PRE_BACKUP_HOUR:$(printf '%02d' $PRE_BACKUP_MINUTE) (5 min before backup at $BACKUP_HOUR:$(printf '%02d' $BACKUP_MINUTE))"
+                echo "  Run 'bash $SCRIPT_PATH enable' or 'disable' to auto-update"
+            fi
+        fi
     else
-        echo "  Post-reboot: No sync configured"
+        echo "  No cronjob configured"
     fi
     echo
     
@@ -583,8 +595,6 @@ show_status() {
 
 # Function to toggle logging
 toggle_logging() {
-    local tmp_script="/tmp/manage_loadavg_check.sh"
-
     if [ "$1" = "on" ]; then
         echo "Enabling logging..."
         # Update cronjob to add NO_LOG=0 for logging
@@ -594,11 +604,8 @@ toggle_logging() {
             cron_entry="$minute $hour * * * NO_LOG=0 /bin/bash $SCRIPT_PATH disable >/dev/null 2>&1"
             (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH disable" || true; echo "$cron_entry") | crontab -
         fi
-        # Update post-backup (use /tmp copy to avoid noexec)
-        # Ensure /tmp copy exists
-        cp "$SCRIPT_PATH" "$tmp_script" 2>/dev/null || true
-        chmod +x "$tmp_script" 2>/dev/null || true
-        post_backup_cmd="NO_LOG=0 /bin/bash $tmp_script enable"
+        # Update post-backup
+        post_backup_cmd="NO_LOG=0 /bin/bash $SCRIPT_PATH enable"
         post_backup_json="{\"post_backup\":{\"failure\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]},\"success\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]}}}"
         api_login
         api_config_put "os/backup/post-backup" "$post_backup_json" && api_config_apply
@@ -612,11 +619,8 @@ toggle_logging() {
             cron_entry="$minute $hour * * * /bin/bash $SCRIPT_PATH disable >/dev/null 2>&1"
             (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH disable" || true; echo "$cron_entry") | crontab -
         fi
-        # Update post-backup (use /tmp copy to avoid noexec)
-        # Ensure /tmp copy exists
-        cp "$SCRIPT_PATH" "$tmp_script" 2>/dev/null || true
-        chmod +x "$tmp_script" 2>/dev/null || true
-        post_backup_cmd="/bin/bash $tmp_script enable"
+        # Update post-backup
+        post_backup_cmd="/bin/bash $SCRIPT_PATH enable"
         post_backup_json="{\"post_backup\":{\"failure\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]},\"success\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]}}}"
         api_login
         api_config_put "os/backup/post-backup" "$post_backup_json" && api_config_apply
@@ -662,9 +666,6 @@ case "${1:-}" in
     status)
         show_status
         ;;
-    sync)
-        sync_to_tmp
-        ;;
     credentials)
         echo "Update API credentials"
         if prompt_credentials; then
@@ -681,7 +682,7 @@ case "${1:-}" in
         echo "FireMon OS LoadAvgCheck Manager"
         echo "================================"
         echo
-        echo "Usage: $0 [--no-log] {disable|enable|setup|cleanup|status|sync|credentials|logging}"
+        echo "Usage: $0 [--no-log] {disable|enable|setup|cleanup|status|credentials|logging}"
         echo
         echo "Commands:"
         echo "  disable      - Disable LoadAvgCheck health check"
@@ -689,7 +690,6 @@ case "${1:-}" in
         echo "  setup        - Configure cronjob and post-backup execution (prompts for credentials)"
         echo "  cleanup      - Remove all configurations and enable check"
         echo "  status       - Show current configuration status"
-        echo "  sync         - Sync script to /tmp (needed after script updates)"
         echo "  credentials  - Update stored API credentials"
         echo "  logging      - Toggle logging on/off (usage: logging {on|off})"
         echo
@@ -710,17 +710,15 @@ case "${1:-}" in
         echo "  NO_LOG=1 - Disable logging (alternative to --no-log flag)"
         echo
         echo "The script will:"
-        echo "  - Copy itself to /tmp to bypass /home noexec restrictions"
-        echo "  - Disable LoadAvgCheck 5 minutes before backup starts (via cron)"
-        echo "  - Re-enable LoadAvgCheck after backup completes (via post-backup hook)"
-        echo "  - Auto-recreate /tmp copy after reboots (via @reboot cron)"
+        echo "  - Prompt for API credentials (if not already stored)"
+        echo "  - Configure cronjob to disable LoadAvgCheck 5 minutes before backup"
+        echo "  - Configure post-backup hook to re-enable LoadAvgCheck after backup"
         echo
         echo "Notes:"
-        echo "  - /tmp copy is used for post-backup execution (bypasses noexec on /home)"
-        echo "  - Script auto-detects when run as root and executes fmos as admin user"
-        echo "  - After updating this script, run 'sync' to update /tmp copy"
-        echo "  - @reboot cronjob automatically syncs /tmp copy after system reboots"
-        echo "  - /tmp copy is recreated on each 'setup' or 'sync' command"
+        echo "  - Uses FMOS Control Panel API (no CLI permission issues)"
+        echo "  - Credentials stored securely in: $API_CREDS_FILE"
+        echo "  - Post-backup hook: /bin/bash $SCRIPT_PATH enable"
+        echo "  - Updates to this script take effect immediately (no sync needed)"
         echo
         exit 1
         ;;

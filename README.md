@@ -9,16 +9,15 @@ During FMOS backup operations, system load can spike significantly, triggering t
 ## Features
 
 - **Automatic Check Management**: Disables LoadAvgCheck before backups, re-enables after completion
-- **API-Based Configuration**: Uses FMOS Control Panel API instead of CLI commands (no permission issues!)
+- **API-Based Configuration**: Uses FMOS Control Panel API via curl (no CLI permission issues!)
 - **Secure Credential Storage**: Prompts for credentials during setup, stores them securely with 600 permissions
-- **Cronjob Integration**: Automatically schedules pre-backup check disable
+- **Simple Architecture**: Script runs directly from wherever you place it - no complexity!
+- **Smart Cronjob Sync**: Automatically detects backup schedule changes and updates cronjob timing
 - **Post-Backup Hooks**: Configures FMOS post-backup scripts for automatic re-enable
-- **Noexec Workaround**: Automatically copies script to `/tmp` to bypass `/home` noexec restrictions
-- **Auto-Recovery After Reboot**: Configures `@reboot` cronjob to recreate `/tmp` copy after system reboots
 - **Flexible Logging**: Optional logging with control over verbosity
-- **Status Monitoring**: View current configuration and check status
+- **Status Monitoring**: View current configuration and check status with schedule validation
 - **Safe Configuration**: Uses `jq` for safe JSON manipulation without overwriting other settings
-- **Sync Command**: Easily update `/tmp` copy after script modifications
+- **Immediate Updates**: Changes to the script take effect immediately
 
 ## Requirements
 
@@ -96,9 +95,6 @@ bash ~/manage_loadavg_check.sh cleanup
 # Show current status and configuration
 bash ~/manage_loadavg_check.sh status
 
-# Sync script to /tmp (after making updates to the script)
-bash ~/manage_loadavg_check.sh sync
-
 # Update stored API credentials
 bash ~/manage_loadavg_check.sh credentials
 
@@ -164,39 +160,34 @@ The script automatically detects your FMOS backup schedule:
 ### Configuration Flow
 
 1. **Setup Phase**
-   - Script copies itself to `/tmp/manage_loadavg_check.sh` (bypasses `/home` noexec restriction)
+   - Prompts for API credentials (if not already stored)
+   - Validates credentials against FMOS Control Panel API
    - Configures cronjob for pre-backup disable
-   - Configures post-backup hook to run from `/tmp`
-   - Configures `@reboot` cronjob to recreate `/tmp` copy after system reboots
+   - Configures post-backup hook
 
 2. **Pre-Backup (Cronjob)**
    - Runs 5 minutes before scheduled backup
-   - Adds `fmos.health.checks.basic.LoadAvgCheck` to ignore list
-   - Updates FMOS configuration with `fmos config put` and `fmos config apply`
+   - Calls API to add `fmos.health.checks.basic.LoadAvgCheck` to ignore list
+   - Applies configuration changes via API
 
 3. **Post-Backup (Hook)**
    - Triggered automatically by FMOS after backup completion (runs as root)
-   - Executes `/tmp/manage_loadavg_check.sh enable` (bypasses `/home` noexec)
-   - Script detects it's running as root and switches to admin user for `fmos` commands
-   - Removes LoadAvgCheck from ignore list
+   - Executes `/bin/bash /home/admin/manage_loadavg_check.sh enable`
+   - Script uses stored API credentials to authenticate
+   - Calls API to remove LoadAvgCheck from ignore list
    - Runs on both backup success and failure
-
-4. **Post-Reboot (Auto-Recovery)**
-   - Runs automatically 60 seconds after system reboot
-   - Recreates `/tmp/manage_loadavg_check.sh` copy (lost during reboot)
-   - Ensures post-backup hooks continue working after reboots
 
 ### File Locations
 
-- **Script Source**: `/home/admin/manage_loadavg_check.sh` (or wherever you place it - uses absolute paths)
-- **Script Copy**: `/tmp/manage_loadavg_check.sh` (created during setup, used by post-backup hook)
-- **Log File**: Located in same directory as source script (e.g., `/home/admin/loadavg_check_manager.log`)
+- **Script**: `/home/admin/manage_loadavg_check.sh` (or wherever you place it)
+- **Credentials**: `/home/admin/.fmos_api_creds` (base64 encoded, 600 permissions)
+- **Log File**: `/home/admin/loadavg_check_manager.log` (located in same directory as script)
 - **Cronjob**: Admin user's crontab
-- **FMOS Config**: Modified paths:
+- **FMOS Config** (via API):
   - `os/health` - Health check ignore list
   - `os/backup/post-backup` - Post-backup script hooks (executed by backup system as root)
 
-**Note**: The `/tmp` copy is necessary because `/home` is typically mounted with `noexec` on FMOS appliances. The `/tmp` copy is automatically created/updated during `setup` and can be manually synced with the `sync` command.
+**Note**: The script runs directly from wherever you place it. Updates take effect immediately with no sync needed.
 
 ## Status Output Example
 
@@ -206,24 +197,18 @@ The script automatically detects your FMOS backup schedule:
 Health Check Status:
   ✓ fmos.health.checks.basic.LoadAvgCheck is currently ENABLED
 
-Script Locations:
-  Source: /home/admin/manage_loadavg_check.sh
-  /tmp copy: EXISTS (✓ up to date)
+Script Location:
+  /home/admin/manage_loadavg_check.sh
 
-Execution Context:
-  Current user: admin
-  Detected admin user: admin
-  Running as: normal user (fmos commands run directly)
+API Authentication:
+  Stored credentials: ✓ (user: adam)
 
 Backup Schedule:
   Enabled: true
   Schedule: daily at 23:48
 
 Cronjob Status:
-  Pre-backup disable:
-    43 23 * * * /bin/bash /home/admin/manage_loadavg_check.sh disable >/dev/null 2>&1
-  Post-reboot sync:
-    @reboot sleep 60 && /bin/bash /home/admin/manage_loadavg_check.sh sync >/dev/null 2>&1
+  43 23 * * * /bin/bash /home/admin/manage_loadavg_check.sh disable >/dev/null 2>&1
 
 Post-backup Configuration:
   ✓ Post-backup script configured
@@ -235,77 +220,36 @@ Logging:
 
 ## Troubleshooting
 
-### Post-Backup Action Permission Denied (Root Execution)
+### Post-Backup Action Permission Denied
 
-If you see "Post-backup action failed: Permission denied" in cron emails:
+If you see "Post-backup action failed" errors:
 
-**Common Issues:**
-1. `/home` mounted with `noexec` - prevents script execution from `/home`
-2. `fmos` command denies execution by root user - requires admin user privileges
+**The Solution:**
+The script now uses the FMOS Control Panel API instead of CLI commands, which completely eliminates permission issues!
 
-**How the script handles this:**
-- Automatically copies itself to `/tmp` (bypasses `noexec` on `/home`)
-- Dynamically detects the admin username (no hardcoded usernames!)
-- When running as root, automatically switches to detected admin user for all `fmos` commands
-- Uses `runuser -u <admin_user>` (preferred) or `su <admin_user>` when executed by backup system
-
-**Solution - Use /tmp Copy** (Automatic in updated script):
+**Verify Configuration:**
 ```bash
-# The script now automatically copies itself to /tmp during setup
-# /tmp typically does NOT have noexec restrictions
+# Check that credentials are stored
+bash /home/admin/manage_loadavg_check.sh status
+# Should show: "Stored credentials: ✓ (user: adam)"
+
+# Test API authentication manually
+bash /home/admin/manage_loadavg_check.sh enable
+bash /home/admin/manage_loadavg_check.sh disable
+
+# Check post-backup configuration via API
+curl -k -s \
+  -H "Cookie: $(cat ~/.fmos_api_creds | head -1 | base64 -d)" \
+  "https://localhost:55555/api/config/values/os%2Fbackup%2Fpost-backup"
+```
+
+**Update Credentials:**
+```bash
+# If credentials are wrong or expired
+bash /home/admin/manage_loadavg_check.sh credentials
+
+# Re-run setup if needed
 bash /home/admin/manage_loadavg_check.sh setup
-
-# Verify the /tmp copy was created
-bash /home/admin/manage_loadavg_check.sh status
-
-# Check the post-backup configuration
-fmos config get os/backup/post-backup
-# Should show: "command": "/bin/bash /tmp/manage_loadavg_check.sh enable"
-```
-
-**After Script Updates**:
-```bash
-# If you update the script, sync the /tmp copy
-bash /home/admin/manage_loadavg_check.sh sync
-
-# Verify it's up to date
-bash /home/admin/manage_loadavg_check.sh status
-```
-
-**Verify noexec is the issue**:
-```bash
-# Check if /home has noexec flag
-mount | grep /home
-# If you see "noexec" in the output, that's the issue
-
-# The /tmp directory should NOT have noexec
-mount | grep /tmp
-```
-
-**Verify correct user detection**:
-```bash
-# Check status to see detected admin user
-bash /home/adam/manage_loadavg_check.sh status
-# Look for "Execution Context" section
-
-# The script should auto-detect:
-# - "adam" if you're user adam
-# - "admin" if you're user admin
-# - Any other username based on /home directory
-```
-
-**Debug user switching** (for advanced troubleshooting):
-```bash
-# The script uses these methods (tried in order) when run as root:
-# 1. runuser -u adam -- bash -c "fmos config get os/health"
-# 2. su adam -c "fmos config get os/health"  (without login dash)
-
-# Verify your user can run fmos commands normally
-fmos config get os/health
-# Should return JSON config - if this fails, fmos itself has an issue
-
-# Check the /tmp copy has the correct logic
-grep -A 10 "run_fmos()" /tmp/manage_loadavg_check.sh
 ```
 
 ### Permission Denied Error (Direct Execution)
@@ -322,34 +266,46 @@ source ~/.bashrc
 manage_loadavg status
 ```
 
-### /tmp Copy Missing After Reboot
 
-**This is now handled automatically!** When you run `setup`, the script configures a `@reboot` cronjob that automatically recreates the `/tmp` copy 60 seconds after each system reboot.
+### Automatic Cronjob Synchronization
 
-**To verify auto-recovery is configured**:
+The script automatically detects when the backup schedule has changed and updates the cronjob accordingly:
+
 ```bash
-# Check status - should show "@reboot" entry
-bash /home/admin/manage_loadavg_check.sh status
+# The cronjob is automatically checked and updated during:
+# - enable operations (post-backup)
+# - disable operations (pre-backup via cron)
+# - status checks (displays warning if out of sync)
 
-# Manually verify crontab
-crontab -l | grep @reboot
-# Should show: @reboot sleep 60 && /bin/bash /home/admin/manage_loadavg_check.sh sync >/dev/null 2>&1
+# Example: You change backup from 23:48 to 02:00
+# Next time the script runs (enable/disable), you'll see:
+⚠ Backup schedule has changed!
+  Backup is now at: 02:00
+  Cronjob updated to: 01:55
+
+# Or when running status:
+Cronjob Status:
+  43 23 * * * /bin/bash /home/admin/manage_loadavg_check.sh disable >/dev/null 2>&1
+
+  ⚠ WARNING: Cronjob schedule is out of sync!
+  Current cronjob: 23:43
+  Should be:       01:55 (5 min before backup at 02:00)
+  Run 'bash /home/admin/manage_loadavg_check.sh enable' or 'disable' to auto-update
 ```
 
-**Manual sync** (only needed if you update the script):
-```bash
-# After updating the script source, sync to /tmp
-bash /home/admin/manage_loadavg_check.sh sync
+**How it works:**
+1. Every time `enable` or `disable` runs, it queries the current backup schedule via API
+2. Compares it with the current cronjob schedule
+3. If different, automatically updates the cronjob to run 5 minutes before the new backup time
+4. Logs the change and notifies you
 
-# Verify it's up to date
-bash /home/admin/manage_loadavg_check.sh status
-```
+This means you can change the backup schedule in the FMOS UI and the script will automatically adapt!
 
 ### Verify Check is Being Disabled
 
 ```bash
-# Check current ignore list
-fmos config get os/health | jq '.health.ignore_checks'
+# Check current ignore list via API
+curl -k -s -H "Cookie: ..." "https://localhost:55555/api/config/values/os%2Fhealth" | jq '.health.ignore_checks'
 
 # Monitor the log file (if logging enabled)
 tail -f ~/loadavg_check_manager.log
@@ -375,29 +331,29 @@ To completely remove all configurations:
 # Remove all setup and re-enable checks
 # This removes:
 #   - Pre-backup cronjob
-#   - @reboot cronjob
 #   - Post-backup hook configuration
-#   - /tmp script copy
+#   - Stored API credentials
 #   - Re-enables LoadAvgCheck
 bash ~/manage_loadavg_check.sh cleanup
 
 # Optionally remove the script and logs
 rm -f ~/manage_loadavg_check.sh
 rm -f ~/loadavg_check_manager.log
+rm -f ~/.fmos_api_creds
 ```
 
 ## Security Considerations
 
 - Designed for FMOS virtual appliance (no root/sudo access required)
 - Script uses explicit `/bin/bash` interpreter to work when executed by backup system (root)
-- Uses absolute paths to work correctly regardless of which user runs the script
-- **Auto-detects execution context**: When run by root (backup system), automatically switches to admin user for `fmos` commands using `runuser` (preferred) or `su` (fallback)
-- **Portable design**: Dynamically detects admin username - no hardcoded usernames - works on any FMOS system
-- Uses FMOS native configuration management (`fmos config`)
+- **API-based authentication**: Uses FMOS Control Panel API instead of CLI commands
+- **Credential storage**: Base64 encoded in `.fmos_api_creds` with 600 permissions (read-only by owner)
+- **Portable design**: Dynamically detects admin username - no hardcoded values
+- All operations use FMOS Control Panel API (`https://localhost:55555/api`)
 - All operations logged for audit purposes (when logging enabled)
-- No system files are modified directly
+- No direct system file modifications - all changes via API
 - Cronjob runs with admin user privileges
-- **Note on /tmp usage**: The script copies itself to `/tmp` to bypass `/home` noexec restrictions. This is necessary for FMOS appliances and is a standard workaround. The `/tmp` copy is cleared on reboot and automatically recreated via `@reboot` cronjob.
+- **Simple architecture**: Script runs from wherever placed - no temporary copies needed
 
 ## Support
 
