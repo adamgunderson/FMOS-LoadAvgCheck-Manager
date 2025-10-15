@@ -11,6 +11,42 @@ SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 LOG_FILE="${SCRIPT_DIR}/loadavg_check_manager.log"
 CHECK_NAME="fmos.health.checks.basic.LoadAvgCheck"
 
+# Detect the admin user dynamically
+# When run from /tmp by root, we need to know which user to su to for fmos commands
+detect_admin_user() {
+    local detected_user=""
+
+    # Method 1: If not running as root, use current user
+    if [ "$USER" != "root" ] && [ -n "$USER" ]; then
+        detected_user="$USER"
+    # Method 2: Try to find the source script in /home and get its owner
+    elif [ -f "/home/*/manage_loadavg_check.sh" ] 2>/dev/null; then
+        local source_script=$(ls /home/*/manage_loadavg_check.sh 2>/dev/null | head -1)
+        if [ -n "$source_script" ]; then
+            detected_user=$(stat -c '%U' "$source_script" 2>/dev/null)
+        fi
+    fi
+
+    # Method 3: Try to extract from script directory path
+    if [ -z "$detected_user" ]; then
+        detected_user=$(echo "$SCRIPT_DIR" | grep -oP '(?<=/home/)[^/]+' | head -1)
+    fi
+
+    # Method 4: Look for first non-root user in /home
+    if [ -z "$detected_user" ]; then
+        detected_user=$(ls -1 /home 2>/dev/null | head -1)
+    fi
+
+    # Fallback: default to "admin"
+    if [ -z "$detected_user" ]; then
+        detected_user="admin"
+    fi
+
+    echo "$detected_user"
+}
+
+ADMIN_USER=$(detect_admin_user)
+
 # Logging control - set to 1 to disable logging, can be overridden by environment variable
 NO_LOG="${NO_LOG:-0}"
 
@@ -22,6 +58,18 @@ for arg in "$@"; do
         set -- "${@/--no-log/}"
     fi
 done
+
+# Function to run fmos commands as the correct user
+# When run by root (e.g., post-backup), fmos commands need to run as admin user
+run_fmos() {
+    if [ "$(id -u)" = "0" ]; then
+        # Running as root, switch to admin user for fmos commands
+        su - "$ADMIN_USER" -c "$*"
+    else
+        # Running as normal user, execute directly
+        eval "$@"
+    fi
+}
 
 # Logging function
 log_message() {
@@ -38,21 +86,21 @@ log_message() {
 # Function to disable LoadAvgCheck
 disable_check() {
     log_message "Starting: Disabling $CHECK_NAME"
-    
+
     # Get current health config and add the ignore check
-    current_config=$(fmos config get os/health 2>/dev/null || echo '{}')
-    
+    current_config=$(run_fmos "fmos config get os/health 2>/dev/null || echo '{}'")
+
     # Use jq to add the check to ignore_checks array (avoiding duplicates)
     updated_config=$(echo "$current_config" | jq --arg check "$CHECK_NAME" '
         .health.ignore_checks = (
-            (.health.ignore_checks // []) | 
+            (.health.ignore_checks // []) |
             if index($check) then . else . + [$check] end
         )
     ')
-    
+
     # Apply the configuration
-    echo "$updated_config" | fmos config put os/health - && fmos config apply all
-    
+    echo "$updated_config" | run_fmos "fmos config put os/health -" && run_fmos "fmos config apply all"
+
     if [ $? -eq 0 ]; then
         log_message "Success: $CHECK_NAME has been disabled"
     else
@@ -64,10 +112,10 @@ disable_check() {
 # Function to enable LoadAvgCheck (remove from ignore list)
 enable_check() {
     log_message "Starting: Enabling $CHECK_NAME"
-    
+
     # Get current health config
-    current_config=$(fmos config get os/health 2>/dev/null || echo '{}')
-    
+    current_config=$(run_fmos "fmos config get os/health 2>/dev/null || echo '{}'")
+
     # Use jq to remove the check from ignore_checks array
     updated_config=$(echo "$current_config" | jq --arg check "$CHECK_NAME" '
         if .health.ignore_checks then
@@ -81,10 +129,10 @@ enable_check() {
             .
         end
     ')
-    
+
     # Apply the configuration
-    echo "$updated_config" | fmos config put os/health - && fmos config apply all
-    
+    echo "$updated_config" | run_fmos "fmos config put os/health -" && run_fmos "fmos config apply all"
+
     if [ $? -eq 0 ]; then
         log_message "Success: $CHECK_NAME has been enabled"
     else
@@ -135,7 +183,7 @@ EOF
 )
 
     # Apply the post-backup configuration
-    echo "$post_backup_config" | fmos config put os/backup/post-backup - && fmos config apply all
+    echo "$post_backup_config" | run_fmos "fmos config put os/backup/post-backup -" && run_fmos "fmos config apply all"
 
     if [ $? -eq 0 ]; then
         log_message "Success: Post-backup script execution configured (using $tmp_script)"
@@ -148,9 +196,10 @@ EOF
 # Function to setup cronjob for pre-backup disable
 setup_cronjob() {
     log_message "Setting up cronjob for pre-backup check disable"
-    
+
     # Get current backup schedule
-    backup_config=$(fmos config get os/backup/auto-backup 2>/dev/null || echo '{}')
+    backup_config=$(run_fmos "fmos config get os/backup/auto-backup 2>/dev/null || echo '{}'")
+
     
     # Extract backup time (defaults if not set)
     if [ "$backup_config" = "{}" ]; then
@@ -212,7 +261,7 @@ cleanup_setup() {
     log_message "Cronjobs removed (pre-backup and @reboot)"
 
     # Clear post-backup configuration
-    echo '{"post_backup": {}}' | fmos config put os/backup/post-backup - && fmos config apply all
+    echo '{"post_backup": {}}' | run_fmos "fmos config put os/backup/post-backup -" && run_fmos "fmos config apply all"
     log_message "Post-backup configuration cleared"
 
     # Remove /tmp copy
@@ -247,7 +296,7 @@ show_status() {
 
     # Check if LoadAvgCheck is currently ignored
     echo "Health Check Status:"
-    current_health=$(fmos config get os/health 2>/dev/null || echo '{}')
+    current_health=$(run_fmos "fmos config get os/health 2>/dev/null || echo '{}'")
     ignored_checks=$(echo "$current_health" | jq -r '.health.ignore_checks[]?' 2>/dev/null)
 
     if echo "$ignored_checks" | grep -q "$CHECK_NAME"; then
@@ -272,10 +321,22 @@ show_status() {
         echo "  /tmp copy: MISSING (⚠ run 'setup' or 'sync' command)"
     fi
     echo
+
+    # Show detected admin user
+    echo "Execution Context:"
+    echo "  Current user: $(whoami)"
+    echo "  Detected admin user: $ADMIN_USER"
+    if [ "$(id -u)" = "0" ]; then
+        echo "  Running as: root (will switch to '$ADMIN_USER' for fmos commands)"
+    else
+        echo "  Running as: normal user (fmos commands run directly)"
+    fi
+    echo
     
     # Show backup schedule
     echo "Backup Schedule:"
-    backup_config=$(fmos config get os/backup/auto-backup 2>/dev/null || echo '{}')
+    backup_config=$(run_fmos "fmos config get os/backup/auto-backup 2>/dev/null || echo '{}'")
+
     if [ "$backup_config" = "{}" ]; then
         echo "  Using default: Daily at 23:48"
     else
@@ -311,7 +372,8 @@ show_status() {
     
     # Show post-backup configuration
     echo "Post-backup Configuration:"
-    post_backup=$(fmos config get os/backup/post-backup 2>/dev/null || echo '{}')
+    post_backup=$(run_fmos "fmos config get os/backup/post-backup 2>/dev/null || echo '{}'")
+
     if echo "$post_backup" | jq -e '.post_backup.success."run-command"[]' >/dev/null 2>&1; then
         echo "  ✓ Post-backup script configured"
     else
@@ -351,7 +413,7 @@ toggle_logging() {
         chmod +x "$tmp_script" 2>/dev/null || true
         post_backup_cmd="NO_LOG=0 /bin/bash $tmp_script enable"
         echo "{\"post_backup\":{\"failure\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]},\"success\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]}}}" | \
-            fmos config put os/backup/post-backup - && fmos config apply all
+            run_fmos "fmos config put os/backup/post-backup -" && run_fmos "fmos config apply all"
         echo "Logging has been enabled"
     elif [ "$1" = "off" ]; then
         echo "Disabling logging..."
@@ -368,7 +430,7 @@ toggle_logging() {
         chmod +x "$tmp_script" 2>/dev/null || true
         post_backup_cmd="/bin/bash $tmp_script enable"
         echo "{\"post_backup\":{\"failure\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]},\"success\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]}}}" | \
-            fmos config put os/backup/post-backup - && fmos config apply all
+            run_fmos "fmos config put os/backup/post-backup -" && run_fmos "fmos config apply all"
         echo "Logging has been disabled (back to default)"
     else
         echo "Usage: $0 logging {on|off}"
@@ -443,6 +505,7 @@ case "${1:-}" in
         echo
         echo "Notes:"
         echo "  - /tmp copy is used for post-backup execution (bypasses noexec on /home)"
+        echo "  - Script auto-detects when run as root and executes fmos as admin user"
         echo "  - After updating this script, run 'sync' to update /tmp copy"
         echo "  - @reboot cronjob automatically syncs /tmp copy after system reboots"
         echo "  - /tmp copy is recreated on each 'setup' or 'sync' command"

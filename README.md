@@ -12,6 +12,7 @@ During FMOS backup operations, system load can spike significantly, triggering t
 - **Cronjob Integration**: Automatically schedules pre-backup check disable
 - **Post-Backup Hooks**: Configures FMOS post-backup scripts for automatic re-enable
 - **Noexec Workaround**: Automatically copies script to `/tmp` to bypass `/home` noexec restrictions
+- **Root Execution Support**: Auto-detects when run as root and switches to admin user for `fmos` commands
 - **Auto-Recovery After Reboot**: Configures `@reboot` cronjob to recreate `/tmp` copy after system reboots
 - **Flexible Logging**: Optional logging with control over verbosity
 - **Status Monitoring**: View current configuration and check status
@@ -139,6 +140,7 @@ The script automatically detects your FMOS backup schedule:
 3. **Post-Backup (Hook)**
    - Triggered automatically by FMOS after backup completion (runs as root)
    - Executes `/tmp/manage_loadavg_check.sh enable` (bypasses `/home` noexec)
+   - Script detects it's running as root and switches to admin user for `fmos` commands
    - Removes LoadAvgCheck from ignore list
    - Runs on both backup success and failure
 
@@ -171,6 +173,11 @@ Script Locations:
   Source: /home/admin/manage_loadavg_check.sh
   /tmp copy: EXISTS (✓ up to date)
 
+Execution Context:
+  Current user: admin
+  Detected admin user: admin
+  Running as: normal user (fmos commands run directly)
+
 Backup Schedule:
   Enabled: true
   Schedule: daily at 23:48
@@ -193,9 +200,17 @@ Logging:
 
 ### Post-Backup Action Permission Denied (Root Execution)
 
-If you see "Post-backup action failed: [Errno 13] Permission denied" in cron emails:
+If you see "Post-backup action failed: Permission denied" in cron emails:
 
-**Problem**: On FMOS virtual appliances, `/home` is typically mounted with the `noexec` flag, which prevents execution of ANY files from that location - even through bash. The backup system runs as root and cannot execute scripts from `/home`.
+**Common Issues:**
+1. `/home` mounted with `noexec` - prevents script execution from `/home`
+2. `fmos` command denies execution by root user - requires admin user privileges
+
+**How the script handles this:**
+- Automatically copies itself to `/tmp` (bypasses `noexec` on `/home`)
+- Dynamically detects the admin username (no hardcoded usernames!)
+- When running as root, automatically switches to detected admin user for all `fmos` commands
+- Uses `su - <admin_user> -c "fmos ..."` when executed by backup system (root)
 
 **Solution - Use /tmp Copy** (Automatic in updated script):
 ```bash
@@ -228,6 +243,18 @@ mount | grep /home
 
 # The /tmp directory should NOT have noexec
 mount | grep /tmp
+```
+
+**Verify correct user detection**:
+```bash
+# Check status to see detected admin user
+bash /home/admin/manage_loadavg_check.sh status
+# Look for "Execution Context" section
+
+# The script should auto-detect:
+# - "adam" if you're user adam
+# - "admin" if you're user admin
+# - Any other username based on /home directory
 ```
 
 ### Permission Denied Error (Direct Execution)
@@ -313,11 +340,13 @@ rm -f ~/loadavg_check_manager.log
 - Designed for FMOS virtual appliance (no root/sudo access required)
 - Script uses explicit `/bin/bash` interpreter to work when executed by backup system (root)
 - Uses absolute paths to work correctly regardless of which user runs the script
+- **Auto-detects execution context**: When run by root (backup system), automatically switches to admin user for `fmos` commands using `su`
+- **Portable design**: Dynamically detects admin username - no hardcoded usernames - works on any FMOS system
 - Uses FMOS native configuration management (`fmos config`)
 - All operations logged for audit purposes (when logging enabled)
 - No system files are modified directly
 - Cronjob runs with admin user privileges
-- **Note on /tmp usage**: The script copies itself to `/tmp` to bypass `/home` noexec restrictions. This is necessary for FMOS appliances and is a standard workaround. The `/tmp` copy is cleared on reboot and can be recreated with the `sync` command.
+- **Note on /tmp usage**: The script copies itself to `/tmp` to bypass `/home` noexec restrictions. This is necessary for FMOS appliances and is a standard workaround. The `/tmp` copy is cleared on reboot and automatically recreated via `@reboot` cronjob.
 
 ## Support
 
