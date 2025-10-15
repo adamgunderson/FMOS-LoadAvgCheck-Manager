@@ -9,10 +9,11 @@ During FMOS backup operations, system load can spike significantly, triggering t
 ## Features
 
 - **Automatic Check Management**: Disables LoadAvgCheck before backups, re-enables after completion
+- **API-Based Configuration**: Uses FMOS Control Panel API instead of CLI commands (no permission issues!)
+- **Secure Credential Storage**: Prompts for credentials during setup, stores them securely with 600 permissions
 - **Cronjob Integration**: Automatically schedules pre-backup check disable
 - **Post-Backup Hooks**: Configures FMOS post-backup scripts for automatic re-enable
 - **Noexec Workaround**: Automatically copies script to `/tmp` to bypass `/home` noexec restrictions
-- **Root Execution Support**: Auto-detects when run as root and switches to admin user for `fmos` commands
 - **Auto-Recovery After Reboot**: Configures `@reboot` cronjob to recreate `/tmp` copy after system reboots
 - **Flexible Logging**: Optional logging with control over verbosity
 - **Status Monitoring**: View current configuration and check status
@@ -23,7 +24,9 @@ During FMOS backup operations, system load can spike significantly, triggering t
 
 - FMOS virtual appliance with admin user access
 - `jq` installed (for JSON processing)
+- `curl` installed (for API calls)
 - Bash shell (standard on FMOS)
+- FMOS Control Panel API credentials
 - No root/sudo access required
 
 ## Installation
@@ -52,17 +55,23 @@ If `wget` is not available or you prefer manual installation:
 ## Quick Start
 
 ```bash
-# Run the automatic setup
+# Run the automatic setup (will prompt for API credentials)
 bash ~/manage_loadavg_check.sh setup
+
+# You will be prompted for:
+# - Username (defaults to your current user)
+# - Password (hidden input)
+# - Password confirmation
 
 # Verify the configuration
 bash ~/manage_loadavg_check.sh status
 ```
 
 This will:
-1. Configure a cronjob to disable LoadAvgCheck 5 minutes before backup
-2. Set up post-backup scripts to re-enable the check after backup completion
-3. Show the current configuration status
+1. Prompt for and securely store FMOS Control Panel API credentials
+2. Configure a cronjob to disable LoadAvgCheck 5 minutes before backup
+3. Set up post-backup scripts to re-enable the check after backup completion
+4. Show the current configuration status
 
 ## Usage
 
@@ -90,11 +99,39 @@ bash ~/manage_loadavg_check.sh status
 # Sync script to /tmp (after making updates to the script)
 bash ~/manage_loadavg_check.sh sync
 
+# Update stored API credentials
+bash ~/manage_loadavg_check.sh credentials
+
 # Toggle logging on for debugging
 bash ~/manage_loadavg_check.sh logging on
 
 # Toggle logging off (return to silent mode)
 bash ~/manage_loadavg_check.sh logging off
+```
+
+### Credential Management
+
+The script uses the FMOS Control Panel API and requires credentials:
+
+```bash
+# During setup, you'll be prompted for credentials
+bash ~/manage_loadavg_check.sh setup
+
+# To update credentials later
+bash ~/manage_loadavg_check.sh credentials
+
+# Credentials are stored in: ~/.fmos_api_creds (or script directory)
+# File permissions: 600 (readable only by owner)
+# Storage: Base64 encoded (obfuscated, not encrypted)
+```
+
+**Alternative: Environment Variables**
+```bash
+# Set credentials via environment (takes priority over stored file)
+export FMOS_API_USER=adam
+export FMOS_API_PASS='your_password'
+
+bash ~/manage_loadavg_check.sh enable
 ```
 
 ### Logging Options

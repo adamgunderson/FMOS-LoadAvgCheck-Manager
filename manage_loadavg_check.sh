@@ -59,33 +59,184 @@ for arg in "$@"; do
     fi
 done
 
-# Function to run fmos commands as the correct user
-# When run by root (e.g., post-backup), fmos commands need to run as admin user
-run_fmos() {
-    if [ "$(id -u)" = "0" ]; then
-        # Running as root, switch to admin user for fmos commands
-        # fmos binary requires user to be in fmadmin group (root can't execute it)
-        # Use full path to runuser since PATH may not include /usr/sbin
+# API Configuration
+API_BASE_URL="https://localhost:55555/api"
+API_COOKIE_FILE="/tmp/.fmos_api_cookie_$$"
+API_CREDS_FILE="${SCRIPT_DIR}/.fmos_api_creds"
 
-        # Debug logging
-        log_message "DEBUG: Running as root, switching to user: $ADMIN_USER"
-        log_message "DEBUG: Command to execute: $*"
+# Function to call FMOS API
+# Uses curl with session cookies to interact with the Control Panel API
+api_call() {
+    local method="$1"
+    local endpoint="$2"
+    local data="$3"
+    local content_type="${4:-application/json}"
 
-        if [ -x /usr/sbin/runuser ]; then
-            /usr/sbin/runuser -u "$ADMIN_USER" -- bash -c "$*" 2>&1
-        elif [ -x /usr/bin/su ]; then
-            # Fallback to su without '-' to preserve environment
-            /usr/bin/su "$ADMIN_USER" -c "$*" 2>&1
-        else
-            # Last resort: try without switching users (will likely fail)
-            log_message "WARNING: No user switching method available"
-            eval "$@"
-        fi
+    local curl_opts="-k -s -S"  # -k for self-signed cert, -s silent, -S show errors
+
+    if [ -f "$API_COOKIE_FILE" ]; then
+        curl_opts="$curl_opts -b $API_COOKIE_FILE"
+    fi
+    curl_opts="$curl_opts -c $API_COOKIE_FILE"
+
+    if [ -n "$data" ]; then
+        curl $curl_opts -X "$method" \
+            -H "Content-Type: $content_type" \
+            -H "Accept: application/json" \
+            -d "$data" \
+            "${API_BASE_URL}${endpoint}"
     else
-        # Running as normal user, execute directly
-        eval "$@"
+        curl $curl_opts -X "$method" \
+            -H "Accept: application/json" \
+            "${API_BASE_URL}${endpoint}"
     fi
 }
+
+# Function to store API credentials securely
+store_credentials() {
+    local username="$1"
+    local password="$2"
+
+    # Base64 encode for basic obfuscation (not encryption, but better than plain text)
+    local encoded_user=$(echo -n "$username" | base64)
+    local encoded_pass=$(echo -n "$password" | base64)
+
+    # Write to file with restricted permissions
+    cat > "$API_CREDS_FILE" <<EOF
+${encoded_user}
+${encoded_pass}
+EOF
+
+    chmod 600 "$API_CREDS_FILE"
+    log_message "Credentials stored securely in $API_CREDS_FILE"
+}
+
+# Function to retrieve stored credentials
+get_stored_credentials() {
+    if [ ! -f "$API_CREDS_FILE" ]; then
+        return 1
+    fi
+
+    # Read and decode credentials
+    local encoded_user=$(sed -n '1p' "$API_CREDS_FILE")
+    local encoded_pass=$(sed -n '2p' "$API_CREDS_FILE")
+
+    if [ -n "$encoded_user" ] && [ -n "$encoded_pass" ]; then
+        STORED_USER=$(echo "$encoded_user" | base64 -d 2>/dev/null)
+        STORED_PASS=$(echo "$encoded_pass" | base64 -d 2>/dev/null)
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Function to prompt for credentials
+prompt_credentials() {
+    echo ""
+    echo "=== FMOS Control Panel API Credentials ==="
+    echo "These credentials will be stored securely and used for API access."
+    echo ""
+
+    # Prompt for username with default
+    read -p "Username [$ADMIN_USER]: " input_user
+    local username="${input_user:-$ADMIN_USER}"
+
+    # Prompt for password (hidden input)
+    read -s -p "Password: " password
+    echo ""
+
+    # Confirm password
+    read -s -p "Confirm password: " password2
+    echo ""
+
+    if [ "$password" != "$password2" ]; then
+        echo "ERROR: Passwords do not match"
+        return 1
+    fi
+
+    if [ -z "$password" ]; then
+        echo "ERROR: Password cannot be empty"
+        return 1
+    fi
+
+    # Test credentials before storing
+    echo "Testing credentials..."
+    local response=$(curl -k -s -S -X POST \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        -H "Accept: application/json" \
+        -d "username=${username}&password=${password}" \
+        "${API_BASE_URL}/login" 2>&1)
+
+    if echo "$response" | grep -q '"username"'; then
+        echo "✓ Credentials validated successfully"
+        store_credentials "$username" "$password"
+        return 0
+    else
+        echo "✗ Login failed - please check your credentials"
+        echo "Response: $response"
+        return 1
+    fi
+}
+
+# Function to login to API
+# Gets credentials from stored file, environment variables, or prompts user
+api_login() {
+    local username=""
+    local password=""
+
+    # Priority 1: Environment variables
+    if [ -n "${FMOS_API_USER:-}" ] && [ -n "${FMOS_API_PASS:-}" ]; then
+        username="$FMOS_API_USER"
+        password="$FMOS_API_PASS"
+        log_message "DEBUG: Using credentials from environment variables"
+    # Priority 2: Stored credentials file
+    elif get_stored_credentials; then
+        username="$STORED_USER"
+        password="$STORED_PASS"
+        log_message "DEBUG: Using stored credentials for user: $username"
+    # Priority 3: Try without authentication (may work from localhost)
+    else
+        log_message "DEBUG: No credentials found, attempting API call without explicit login"
+        return 0
+    fi
+
+    # Try to login with credentials
+    local response=$(api_call "POST" "/login" "username=${username}&password=${password}" "application/x-www-form-urlencoded" 2>&1)
+    if echo "$response" | grep -q '"username"'; then
+        log_message "DEBUG: API login successful as $username"
+        return 0
+    else
+        log_message "ERROR: API login failed for user $username"
+        return 1
+    fi
+}
+
+# Function to get config via API
+api_config_get() {
+    local category="$1"
+    # URL encode the category (replace / with %2F)
+    local encoded_category=$(echo "$category" | sed 's/\//%2F/g')
+
+    api_call "GET" "/config/values/${encoded_category}"
+}
+
+# Function to put config via API
+api_config_put() {
+    local category="$1"
+    local data="$2"
+    # URL encode the category (replace / with %2F)
+    local encoded_category=$(echo "$category" | sed 's/\//%2F/g')
+
+    api_call "PUT" "/config/values/${encoded_category}" "$data"
+}
+
+# Function to apply config via API
+api_config_apply() {
+    api_call "POST" "/config/apply"
+}
+
+# Cleanup API session on exit
+trap "rm -f $API_COOKIE_FILE" EXIT
 
 # Logging function
 log_message() {
@@ -103,8 +254,11 @@ log_message() {
 disable_check() {
     log_message "Starting: Disabling $CHECK_NAME"
 
+    # Login to API
+    api_login
+
     # Get current health config and add the ignore check
-    current_config=$(run_fmos "fmos config get os/health 2>/dev/null || echo '{}'")
+    current_config=$(api_config_get "os/health")
 
     # Use jq to add the check to ignore_checks array (avoiding duplicates)
     updated_config=$(echo "$current_config" | jq --arg check "$CHECK_NAME" '
@@ -115,7 +269,7 @@ disable_check() {
     ')
 
     # Apply the configuration
-    echo "$updated_config" | run_fmos "fmos config put os/health -" && run_fmos "fmos config apply all"
+    api_config_put "os/health" "$updated_config" && api_config_apply
 
     if [ $? -eq 0 ]; then
         log_message "Success: $CHECK_NAME has been disabled"
@@ -129,8 +283,11 @@ disable_check() {
 enable_check() {
     log_message "Starting: Enabling $CHECK_NAME"
 
+    # Login to API
+    api_login
+
     # Get current health config
-    current_config=$(run_fmos "fmos config get os/health 2>/dev/null || echo '{}'")
+    current_config=$(api_config_get "os/health")
 
     # Use jq to remove the check from ignore_checks array
     updated_config=$(echo "$current_config" | jq --arg check "$CHECK_NAME" '
@@ -147,7 +304,7 @@ enable_check() {
     ')
 
     # Apply the configuration
-    echo "$updated_config" | run_fmos "fmos config put os/health -" && run_fmos "fmos config apply all"
+    api_config_put "os/health" "$updated_config" && api_config_apply
 
     if [ $? -eq 0 ]; then
         log_message "Success: $CHECK_NAME has been enabled"
@@ -199,7 +356,8 @@ EOF
 )
 
     # Apply the post-backup configuration
-    echo "$post_backup_config" | run_fmos "fmos config put os/backup/post-backup -" && run_fmos "fmos config apply all"
+    api_login
+    api_config_put "os/backup/post-backup" "$post_backup_config" && api_config_apply
 
     if [ $? -eq 0 ]; then
         log_message "Success: Post-backup script execution configured (using $tmp_script)"
@@ -214,7 +372,9 @@ setup_cronjob() {
     log_message "Setting up cronjob for pre-backup check disable"
 
     # Get current backup schedule
-    backup_config=$(run_fmos "fmos config get os/backup/auto-backup 2>/dev/null || echo '{}'")
+    api_login
+    backup_config=$(api_config_get "os/backup/auto-backup")
+    [ -z "$backup_config" ] && backup_config="{}"
 
     
     # Extract backup time (defaults if not set)
@@ -277,12 +437,19 @@ cleanup_setup() {
     log_message "Cronjobs removed (pre-backup and @reboot)"
 
     # Clear post-backup configuration
-    echo '{"post_backup": {}}' | run_fmos "fmos config put os/backup/post-backup -" && run_fmos "fmos config apply all"
+    api_login
+    api_config_put "os/backup/post-backup" '{"post_backup": {}}' && api_config_apply
     log_message "Post-backup configuration cleared"
 
     # Remove /tmp copy
     rm -f /tmp/manage_loadavg_check.sh 2>/dev/null || true
     log_message "Removed /tmp script copy"
+
+    # Remove stored credentials
+    if [ -f "$API_CREDS_FILE" ]; then
+        rm -f "$API_CREDS_FILE"
+        log_message "Removed stored API credentials"
+    fi
 
     # Ensure check is enabled
     enable_check
@@ -312,7 +479,9 @@ show_status() {
 
     # Check if LoadAvgCheck is currently ignored
     echo "Health Check Status:"
-    current_health=$(run_fmos "fmos config get os/health 2>/dev/null || echo '{}'")
+    api_login
+    current_health=$(api_config_get "os/health")
+    [ -z "$current_health" ] && current_health="{}"
     ignored_checks=$(echo "$current_health" | jq -r '.health.ignore_checks[]?' 2>/dev/null)
 
     if echo "$ignored_checks" | grep -q "$CHECK_NAME"; then
@@ -351,7 +520,8 @@ show_status() {
     
     # Show backup schedule
     echo "Backup Schedule:"
-    backup_config=$(run_fmos "fmos config get os/backup/auto-backup 2>/dev/null || echo '{}'")
+    backup_config=$(api_config_get "os/backup/auto-backup")
+    [ -z "$backup_config" ] && backup_config="{}"
 
     if [ "$backup_config" = "{}" ]; then
         echo "  Using default: Daily at 23:48"
@@ -388,7 +558,8 @@ show_status() {
     
     # Show post-backup configuration
     echo "Post-backup Configuration:"
-    post_backup=$(run_fmos "fmos config get os/backup/post-backup 2>/dev/null || echo '{}'")
+    post_backup=$(api_config_get "os/backup/post-backup")
+    [ -z "$post_backup" ] && post_backup="{}"
 
     if echo "$post_backup" | jq -e '.post_backup.success."run-command"[]' >/dev/null 2>&1; then
         echo "  ✓ Post-backup script configured"
@@ -428,8 +599,9 @@ toggle_logging() {
         cp "$SCRIPT_PATH" "$tmp_script" 2>/dev/null || true
         chmod +x "$tmp_script" 2>/dev/null || true
         post_backup_cmd="NO_LOG=0 /bin/bash $tmp_script enable"
-        echo "{\"post_backup\":{\"failure\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]},\"success\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]}}}" | \
-            run_fmos "fmos config put os/backup/post-backup -" && run_fmos "fmos config apply all"
+        post_backup_json="{\"post_backup\":{\"failure\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]},\"success\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]}}}"
+        api_login
+        api_config_put "os/backup/post-backup" "$post_backup_json" && api_config_apply
         echo "Logging has been enabled"
     elif [ "$1" = "off" ]; then
         echo "Disabling logging..."
@@ -445,8 +617,9 @@ toggle_logging() {
         cp "$SCRIPT_PATH" "$tmp_script" 2>/dev/null || true
         chmod +x "$tmp_script" 2>/dev/null || true
         post_backup_cmd="/bin/bash $tmp_script enable"
-        echo "{\"post_backup\":{\"failure\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]},\"success\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]}}}" | \
-            run_fmos "fmos config put os/backup/post-backup -" && run_fmos "fmos config apply all"
+        post_backup_json="{\"post_backup\":{\"failure\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]},\"success\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]}}}"
+        api_login
+        api_config_put "os/backup/post-backup" "$post_backup_json" && api_config_apply
         echo "Logging has been disabled (back to default)"
     else
         echo "Usage: $0 logging {on|off}"
@@ -464,6 +637,19 @@ case "${1:-}" in
         ;;
     setup)
         log_message "Running full setup"
+
+        # Check if credentials exist, if not prompt for them
+        if [ ! -f "$API_CREDS_FILE" ]; then
+            echo "API credentials not found. Please provide them now."
+            if ! prompt_credentials; then
+                echo "Setup aborted: credentials required"
+                exit 1
+            fi
+        else
+            echo "Using existing API credentials from $API_CREDS_FILE"
+            echo "(To update credentials, run: $0 credentials)"
+        fi
+
         setup_post_backup
         setup_cronjob
         log_message "Setup complete"
@@ -479,6 +665,15 @@ case "${1:-}" in
     sync)
         sync_to_tmp
         ;;
+    credentials)
+        echo "Update API credentials"
+        if prompt_credentials; then
+            echo "Credentials updated successfully"
+        else
+            echo "Failed to update credentials"
+            exit 1
+        fi
+        ;;
     logging)
         toggle_logging "${2:-}"
         ;;
@@ -486,16 +681,17 @@ case "${1:-}" in
         echo "FireMon OS LoadAvgCheck Manager"
         echo "================================"
         echo
-        echo "Usage: $0 [--no-log] {disable|enable|setup|cleanup|status|sync|logging}"
+        echo "Usage: $0 [--no-log] {disable|enable|setup|cleanup|status|sync|credentials|logging}"
         echo
         echo "Commands:"
-        echo "  disable  - Disable LoadAvgCheck health check"
-        echo "  enable   - Enable LoadAvgCheck health check"
-        echo "  setup    - Configure cronjob and post-backup execution"
-        echo "  cleanup  - Remove all configurations and enable check"
-        echo "  status   - Show current configuration status"
-        echo "  sync     - Sync script to /tmp (needed after script updates)"
-        echo "  logging  - Toggle logging on/off (usage: logging {on|off})"
+        echo "  disable      - Disable LoadAvgCheck health check"
+        echo "  enable       - Enable LoadAvgCheck health check"
+        echo "  setup        - Configure cronjob and post-backup execution (prompts for credentials)"
+        echo "  cleanup      - Remove all configurations and enable check"
+        echo "  status       - Show current configuration status"
+        echo "  sync         - Sync script to /tmp (needed after script updates)"
+        echo "  credentials  - Update stored API credentials"
+        echo "  logging      - Toggle logging on/off (usage: logging {on|off})"
         echo
         echo "Options:"
         echo "  --no-log - Disable logging for this execution"
