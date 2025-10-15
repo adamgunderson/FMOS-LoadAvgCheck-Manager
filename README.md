@@ -12,6 +12,7 @@ During FMOS backup operations, system load can spike significantly, triggering t
 - **Cronjob Integration**: Automatically schedules pre-backup check disable
 - **Post-Backup Hooks**: Configures FMOS post-backup scripts for automatic re-enable
 - **Noexec Workaround**: Automatically copies script to `/tmp` to bypass `/home` noexec restrictions
+- **Auto-Recovery After Reboot**: Configures `@reboot` cronjob to recreate `/tmp` copy after system reboots
 - **Flexible Logging**: Optional logging with control over verbosity
 - **Status Monitoring**: View current configuration and check status
 - **Safe Configuration**: Uses `jq` for safe JSON manipulation without overwriting other settings
@@ -128,6 +129,7 @@ The script automatically detects your FMOS backup schedule:
    - Script copies itself to `/tmp/manage_loadavg_check.sh` (bypasses `/home` noexec restriction)
    - Configures cronjob for pre-backup disable
    - Configures post-backup hook to run from `/tmp`
+   - Configures `@reboot` cronjob to recreate `/tmp` copy after system reboots
 
 2. **Pre-Backup (Cronjob)**
    - Runs 5 minutes before scheduled backup
@@ -139,6 +141,11 @@ The script automatically detects your FMOS backup schedule:
    - Executes `/tmp/manage_loadavg_check.sh enable` (bypasses `/home` noexec)
    - Removes LoadAvgCheck from ignore list
    - Runs on both backup success and failure
+
+4. **Post-Reboot (Auto-Recovery)**
+   - Runs automatically 60 seconds after system reboot
+   - Recreates `/tmp/manage_loadavg_check.sh` copy (lost during reboot)
+   - Ensures post-backup hooks continue working after reboots
 
 ### File Locations
 
@@ -169,7 +176,10 @@ Backup Schedule:
   Schedule: daily at 23:48
 
 Cronjob Status:
-  43 23 * * * /bin/bash /home/admin/manage_loadavg_check.sh disable >/dev/null 2>&1
+  Pre-backup disable:
+    43 23 * * * /bin/bash /home/admin/manage_loadavg_check.sh disable >/dev/null 2>&1
+  Post-reboot sync:
+    @reboot sleep 60 && /bin/bash /home/admin/manage_loadavg_check.sh sync >/dev/null 2>&1
 
 Post-backup Configuration:
   ✓ Post-backup script configured
@@ -236,26 +246,25 @@ manage_loadavg status
 
 ### /tmp Copy Missing After Reboot
 
-If backups start failing after a system reboot:
+**This is now handled automatically!** When you run `setup`, the script configures a `@reboot` cronjob that automatically recreates the `/tmp` copy 60 seconds after each system reboot.
 
-**Problem**: `/tmp` is cleared on reboot, so the script copy is lost.
-
-**Solution**:
+**To verify auto-recovery is configured**:
 ```bash
-# Simply re-run setup or sync to recreate the /tmp copy
-bash /home/admin/manage_loadavg_check.sh setup
-
-# Or use sync if setup was already run
-bash /home/admin/manage_loadavg_check.sh sync
-
-# Verify the copy exists
+# Check status - should show "@reboot" entry
 bash /home/admin/manage_loadavg_check.sh status
+
+# Manually verify crontab
+crontab -l | grep @reboot
+# Should show: @reboot sleep 60 && /bin/bash /home/admin/manage_loadavg_check.sh sync >/dev/null 2>&1
 ```
 
-**Automatic Solution** (Optional):
+**Manual sync** (only needed if you update the script):
 ```bash
-# Add sync command to admin user's crontab to run at boot
-(crontab -l 2>/dev/null; echo "@reboot sleep 60 && /bin/bash /home/admin/manage_loadavg_check.sh sync >/dev/null 2>&1") | crontab -
+# After updating the script source, sync to /tmp
+bash /home/admin/manage_loadavg_check.sh sync
+
+# Verify it's up to date
+bash /home/admin/manage_loadavg_check.sh status
 ```
 
 ### Verify Check is Being Disabled
@@ -286,6 +295,12 @@ To completely remove all configurations:
 
 ```bash
 # Remove all setup and re-enable checks
+# This removes:
+#   - Pre-backup cronjob
+#   - @reboot cronjob
+#   - Post-backup hook configuration
+#   - /tmp script copy
+#   - Re-enables LoadAvgCheck
 bash ~/manage_loadavg_check.sh cleanup
 
 # Optionally remove the script and logs

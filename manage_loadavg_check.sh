@@ -187,19 +187,29 @@ setup_cronjob() {
     
     # Add to crontab (avoiding duplicates)
     (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH disable" || true; echo "$cron_entry") | crontab -
-    
+
     log_message "Cronjob configured: $cron_entry"
     echo "Backup is scheduled at: $backup_hour:$(printf '%02d' $backup_minute)"
     echo "LoadAvgCheck will be disabled at: $pre_backup_hour:$(printf '%02d' $pre_backup_minute)"
+
+    # Add @reboot entry to sync script to /tmp after system reboots
+    # This ensures the /tmp copy is recreated after reboots (since /tmp is cleared)
+    reboot_entry="@reboot sleep 60 && /bin/bash $SCRIPT_PATH sync >/dev/null 2>&1"
+
+    # Remove any existing @reboot entry for this script and add the new one
+    (crontab -l 2>/dev/null | grep -v "@reboot.*$SCRIPT_PATH" || true; echo "$reboot_entry") | crontab -
+
+    log_message "Reboot sync configured: $reboot_entry"
+    echo "Post-reboot sync will recreate /tmp copy after system reboots"
 }
 
 # Function to remove all setup
 cleanup_setup() {
     log_message "Removing all setup configurations"
 
-    # Remove cronjob
-    crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH disable" | crontab - || true
-    log_message "Cronjob removed"
+    # Remove cronjobs (both pre-backup and @reboot entries)
+    crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH disable" | grep -v "@reboot.*$SCRIPT_PATH" | crontab - || true
+    log_message "Cronjobs removed (pre-backup and @reboot)"
 
     # Clear post-backup configuration
     echo '{"post_backup": {}}' | fmos config put os/backup/post-backup - && fmos config apply all
@@ -281,11 +291,21 @@ show_status() {
     # Show cronjob
     echo "Cronjob Status:"
     if crontab -l 2>/dev/null | grep -q "$SCRIPT_PATH disable"; then
+        echo "  Pre-backup disable:"
         crontab -l | grep "$SCRIPT_PATH disable" | while read line; do
-            echo "  $line"
+            echo "    $line"
         done
     else
-        echo "  No cronjob configured"
+        echo "  Pre-backup: No cronjob configured"
+    fi
+
+    if crontab -l 2>/dev/null | grep -q "@reboot.*$SCRIPT_PATH"; then
+        echo "  Post-reboot sync:"
+        crontab -l | grep "@reboot.*$SCRIPT_PATH" | while read line; do
+            echo "    $line"
+        done
+    else
+        echo "  Post-reboot: No sync configured"
     fi
     echo
     
@@ -419,10 +439,12 @@ case "${1:-}" in
         echo "  - Copy itself to /tmp to bypass /home noexec restrictions"
         echo "  - Disable LoadAvgCheck 5 minutes before backup starts (via cron)"
         echo "  - Re-enable LoadAvgCheck after backup completes (via post-backup hook)"
+        echo "  - Auto-recreate /tmp copy after reboots (via @reboot cron)"
         echo
         echo "Notes:"
         echo "  - /tmp copy is used for post-backup execution (bypasses noexec on /home)"
         echo "  - After updating this script, run 'sync' to update /tmp copy"
+        echo "  - @reboot cronjob automatically syncs /tmp copy after system reboots"
         echo "  - /tmp copy is recreated on each 'setup' or 'sync' command"
         echo
         exit 1
