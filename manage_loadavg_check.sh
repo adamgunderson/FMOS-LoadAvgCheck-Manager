@@ -1,12 +1,14 @@
 #!/bin/bash
 # Description: Manages LoadAvgCheck health check during FMOS backup operations
-# Location: ~/manage_loadavg_check.sh (or any user home directory)
+# Location: Can be placed anywhere (uses absolute paths, recommended: /home/admin/)
 
 set -e
 
 # Configuration
-SCRIPT_PATH="$HOME/manage_loadavg_check.sh"
-LOG_FILE="$HOME/loadavg_check_manager.log"
+# Get the absolute path to this script (works regardless of $HOME)
+SCRIPT_PATH="$(readlink -f "$0")"
+SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
+LOG_FILE="${SCRIPT_DIR}/loadavg_check_manager.log"
 CHECK_NAME="fmos.health.checks.basic.LoadAvgCheck"
 
 # Logging control - set to 1 to disable logging, can be overridden by environment variable
@@ -94,13 +96,14 @@ enable_check() {
 # Function to setup post-backup script execution
 setup_post_backup() {
     log_message "Setting up post-backup script execution"
-    
+
     # Determine if logging should be disabled for post-backup execution
-    post_backup_cmd="$SCRIPT_PATH enable"
+    # Use explicit bash interpreter to avoid permission issues when run by root
+    post_backup_cmd="/bin/bash $SCRIPT_PATH enable"
     if [ "$NO_LOG" = "1" ]; then
-        post_backup_cmd="NO_LOG=1 $SCRIPT_PATH enable"
+        post_backup_cmd="NO_LOG=1 /bin/bash $SCRIPT_PATH enable"
     fi
-    
+
     # Create the post-backup configuration
     post_backup_config=$(cat <<EOF
 {
@@ -167,11 +170,12 @@ setup_cronjob() {
     fi
     
     # Create cronjob entry with output redirected to /dev/null
+    # Use explicit bash interpreter to avoid permission issues
     # Include NO_LOG environment variable if logging is disabled
     if [ "$NO_LOG" = "1" ]; then
-        cron_entry="$pre_backup_minute $pre_backup_hour * * * NO_LOG=1 $SCRIPT_PATH disable >/dev/null 2>&1"
+        cron_entry="$pre_backup_minute $pre_backup_hour * * * NO_LOG=1 /bin/bash $SCRIPT_PATH disable >/dev/null 2>&1"
     else
-        cron_entry="$pre_backup_minute $pre_backup_hour * * * $SCRIPT_PATH disable >/dev/null 2>&1"
+        cron_entry="$pre_backup_minute $pre_backup_hour * * * /bin/bash $SCRIPT_PATH disable >/dev/null 2>&1"
     fi
     
     # Add to crontab (avoiding duplicates)
@@ -272,11 +276,11 @@ toggle_logging() {
         if crontab -l 2>/dev/null | grep -q "$SCRIPT_PATH disable"; then
             minute=$(crontab -l | grep "$SCRIPT_PATH disable" | awk '{print $1}')
             hour=$(crontab -l | grep "$SCRIPT_PATH disable" | awk '{print $2}')
-            cron_entry="$minute $hour * * * NO_LOG=0 $SCRIPT_PATH disable >/dev/null 2>&1"
+            cron_entry="$minute $hour * * * NO_LOG=0 /bin/bash $SCRIPT_PATH disable >/dev/null 2>&1"
             (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH disable" || true; echo "$cron_entry") | crontab -
         fi
         # Update post-backup
-        post_backup_cmd="NO_LOG=0 $SCRIPT_PATH enable"
+        post_backup_cmd="NO_LOG=0 /bin/bash $SCRIPT_PATH enable"
         echo "{\"post_backup\":{\"failure\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]},\"success\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]}}}" | \
             fmos config put os/backup/post-backup - && fmos config apply all
         echo "Logging has been enabled"
@@ -286,11 +290,11 @@ toggle_logging() {
         if crontab -l 2>/dev/null | grep -q "$SCRIPT_PATH disable"; then
             minute=$(crontab -l | grep "$SCRIPT_PATH disable" | awk '{print $1}')
             hour=$(crontab -l | grep "$SCRIPT_PATH disable" | awk '{print $2}')
-            cron_entry="$minute $hour * * * $SCRIPT_PATH disable >/dev/null 2>&1"
+            cron_entry="$minute $hour * * * /bin/bash $SCRIPT_PATH disable >/dev/null 2>&1"
             (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH disable" || true; echo "$cron_entry") | crontab -
         fi
         # Update post-backup
-        post_backup_cmd="$SCRIPT_PATH enable"
+        post_backup_cmd="/bin/bash $SCRIPT_PATH enable"
         echo "{\"post_backup\":{\"failure\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]},\"success\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]}}}" | \
             fmos config put os/backup/post-backup - && fmos config apply all
         echo "Logging has been disabled (back to default)"
@@ -343,14 +347,14 @@ case "${1:-}" in
         echo "  --no-log - Disable logging for this execution"
         echo
         echo "Setup Instructions:"
-        echo "  1. Copy this script to your home directory:"
-        echo "     cp $0 ~/manage_loadavg_check.sh"
+        echo "  1. Copy this script to a permanent location (e.g., /home/admin/):"
+        echo "     cp $0 /home/admin/manage_loadavg_check.sh"
         echo "  2. Make it executable:"
-        echo "     chmod +x ~/manage_loadavg_check.sh"
+        echo "     chmod +x /home/admin/manage_loadavg_check.sh"
         echo "  3. Run setup:"
-        echo "     ~/manage_loadavg_check.sh setup"
+        echo "     /home/admin/manage_loadavg_check.sh setup"
         echo "  4. (Optional) Disable logging:"
-        echo "     ~/manage_loadavg_check.sh logging off"
+        echo "     /home/admin/manage_loadavg_check.sh logging off"
         echo
         echo "Environment Variables:"
         echo "  NO_LOG=1 - Disable logging (alternative to --no-log flag)"

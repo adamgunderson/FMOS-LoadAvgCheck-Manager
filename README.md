@@ -17,10 +17,10 @@ During FMOS backup operations, system load can spike significantly, triggering t
 
 ## Requirements
 
-- FMOS system with admin access
+- FMOS virtual appliance with admin user access
 - `jq` installed (for JSON processing)
-- Bash shell
-- Write access to home directory
+- Bash shell (standard on FMOS)
+- No root/sudo access required
 
 ## Installation
 
@@ -131,12 +131,12 @@ The script automatically detects your FMOS backup schedule:
 
 ### File Locations
 
-- **Script**: `~/manage_loadavg_check.sh`
-- **Log File**: `~/loadavg_check_manager.log` (when logging enabled)
-- **Cronjob**: User's crontab
+- **Script**: `/home/admin/manage_loadavg_check.sh` (or wherever you place it - uses absolute paths)
+- **Log File**: Located in same directory as script (e.g., `/home/admin/loadavg_check_manager.log`)
+- **Cronjob**: Admin user's crontab
 - **FMOS Config**: Modified paths:
   - `os/health` - Health check ignore list
-  - `os/backup/post-backup` - Post-backup script hooks
+  - `os/backup/post-backup` - Post-backup script hooks (executed by backup system as root)
 
 ## Status Output Example
 
@@ -151,7 +151,7 @@ Backup Schedule:
   Schedule: daily at 23:48
 
 Cronjob Status:
-  43 23 * * * bash /home/admin/manage_loadavg_check.sh disable >/dev/null 2>&1
+  43 23 * * * /bin/bash /home/admin/manage_loadavg_check.sh disable >/dev/null 2>&1
 
 Post-backup Configuration:
   ✓ Post-backup script configured
@@ -163,7 +163,37 @@ Logging:
 
 ## Troubleshooting
 
-### Permission Denied Error
+### Post-Backup Action Permission Denied (Root Execution)
+
+If you see "Post-backup action failed: [Errno 13] Permission denied" in cron emails:
+
+**Problem**: The backup system runs as root, and the script is in `/home/admin/` where permissions or SELinux may block execution.
+
+**Solution - Reconfigure with Updated Script**:
+```bash
+# The script has been updated to use explicit bash interpreter and absolute paths
+# This bypasses direct execution permission issues
+bash /home/admin/manage_loadavg_check.sh setup
+
+# Verify the configuration shows the full command with /bin/bash
+bash /home/admin/manage_loadavg_check.sh status
+
+# Check the post-backup configuration directly
+fmos config get os/backup/post-backup
+# Should show: "command": "/bin/bash /home/admin/manage_loadavg_check.sh enable"
+```
+
+**If still having issues**, verify file permissions allow read access:
+```bash
+# Check permissions - should be readable by all
+ls -l /home/admin/manage_loadavg_check.sh
+# Should show: -rwxr-xr-x or -rw-r--r--
+
+# If not readable, fix permissions
+chmod 755 /home/admin/manage_loadavg_check.sh
+```
+
+### Permission Denied Error (Direct Execution)
 
 If you encounter "Permission denied" when executing the script directly:
 
@@ -214,11 +244,13 @@ rm -f ~/loadavg_check_manager.log
 
 ## Security Considerations
 
-- Script must be located in user home directory due to FMOS security restrictions
+- Designed for FMOS virtual appliance (no root/sudo access required)
+- Script uses explicit `/bin/bash` interpreter to work when executed by backup system (root)
+- Uses absolute paths to work correctly regardless of which user runs the script
 - Uses FMOS native configuration management (`fmos config`)
 - All operations logged for audit purposes (when logging enabled)
 - No system files are modified directly
-- Cronjob runs with user privileges only
+- Cronjob runs with admin user privileges
 
 ## Support
 
