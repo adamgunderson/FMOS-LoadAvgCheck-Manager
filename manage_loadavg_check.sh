@@ -64,7 +64,23 @@ done
 run_fmos() {
     if [ "$(id -u)" = "0" ]; then
         # Running as root, switch to admin user for fmos commands
-        su - "$ADMIN_USER" -c "$*"
+        # fmos binary requires user to be in fmadmin group (root can't execute it)
+        # Use full path to runuser since PATH may not include /usr/sbin
+
+        # Debug logging
+        log_message "DEBUG: Running as root, switching to user: $ADMIN_USER"
+        log_message "DEBUG: Command to execute: $*"
+
+        if [ -x /usr/sbin/runuser ]; then
+            /usr/sbin/runuser -u "$ADMIN_USER" -- bash -c "$*" 2>&1
+        elif [ -x /usr/bin/su ]; then
+            # Fallback to su without '-' to preserve environment
+            /usr/bin/su "$ADMIN_USER" -c "$*" 2>&1
+        else
+            # Last resort: try without switching users (will likely fail)
+            log_message "WARNING: No user switching method available"
+            eval "$@"
+        fi
     else
         # Running as normal user, execute directly
         eval "$@"

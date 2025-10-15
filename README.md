@@ -210,7 +210,7 @@ If you see "Post-backup action failed: Permission denied" in cron emails:
 - Automatically copies itself to `/tmp` (bypasses `noexec` on `/home`)
 - Dynamically detects the admin username (no hardcoded usernames!)
 - When running as root, automatically switches to detected admin user for all `fmos` commands
-- Uses `su - <admin_user> -c "fmos ..."` when executed by backup system (root)
+- Uses `runuser -u <admin_user>` (preferred) or `su <admin_user>` when executed by backup system
 
 **Solution - Use /tmp Copy** (Automatic in updated script):
 ```bash
@@ -248,13 +248,27 @@ mount | grep /tmp
 **Verify correct user detection**:
 ```bash
 # Check status to see detected admin user
-bash /home/admin/manage_loadavg_check.sh status
+bash /home/adam/manage_loadavg_check.sh status
 # Look for "Execution Context" section
 
 # The script should auto-detect:
 # - "adam" if you're user adam
 # - "admin" if you're user admin
 # - Any other username based on /home directory
+```
+
+**Debug user switching** (for advanced troubleshooting):
+```bash
+# The script uses these methods (tried in order) when run as root:
+# 1. runuser -u adam -- bash -c "fmos config get os/health"
+# 2. su adam -c "fmos config get os/health"  (without login dash)
+
+# Verify your user can run fmos commands normally
+fmos config get os/health
+# Should return JSON config - if this fails, fmos itself has an issue
+
+# Check the /tmp copy has the correct logic
+grep -A 10 "run_fmos()" /tmp/manage_loadavg_check.sh
 ```
 
 ### Permission Denied Error (Direct Execution)
@@ -340,7 +354,7 @@ rm -f ~/loadavg_check_manager.log
 - Designed for FMOS virtual appliance (no root/sudo access required)
 - Script uses explicit `/bin/bash` interpreter to work when executed by backup system (root)
 - Uses absolute paths to work correctly regardless of which user runs the script
-- **Auto-detects execution context**: When run by root (backup system), automatically switches to admin user for `fmos` commands using `su`
+- **Auto-detects execution context**: When run by root (backup system), automatically switches to admin user for `fmos` commands using `runuser` (preferred) or `su` (fallback)
 - **Portable design**: Dynamically detects admin username - no hardcoded usernames - works on any FMOS system
 - Uses FMOS native configuration management (`fmos config`)
 - All operations logged for audit purposes (when logging enabled)
