@@ -11,9 +11,11 @@ During FMOS backup operations, system load can spike significantly, triggering t
 - **Automatic Check Management**: Disables LoadAvgCheck before backups, re-enables after completion
 - **Cronjob Integration**: Automatically schedules pre-backup check disable
 - **Post-Backup Hooks**: Configures FMOS post-backup scripts for automatic re-enable
+- **Noexec Workaround**: Automatically copies script to `/tmp` to bypass `/home` noexec restrictions
 - **Flexible Logging**: Optional logging with control over verbosity
 - **Status Monitoring**: View current configuration and check status
 - **Safe Configuration**: Uses `jq` for safe JSON manipulation without overwriting other settings
+- **Sync Command**: Easily update `/tmp` copy after script modifications
 
 ## Requirements
 
@@ -83,6 +85,9 @@ bash ~/manage_loadavg_check.sh cleanup
 # Show current status and configuration
 bash ~/manage_loadavg_check.sh status
 
+# Sync script to /tmp (after making updates to the script)
+bash ~/manage_loadavg_check.sh sync
+
 # Toggle logging on for debugging
 bash ~/manage_loadavg_check.sh logging on
 
@@ -119,24 +124,33 @@ The script automatically detects your FMOS backup schedule:
 
 ### Configuration Flow
 
-1. **Pre-Backup (Cronjob)**
+1. **Setup Phase**
+   - Script copies itself to `/tmp/manage_loadavg_check.sh` (bypasses `/home` noexec restriction)
+   - Configures cronjob for pre-backup disable
+   - Configures post-backup hook to run from `/tmp`
+
+2. **Pre-Backup (Cronjob)**
    - Runs 5 minutes before scheduled backup
    - Adds `fmos.health.checks.basic.LoadAvgCheck` to ignore list
    - Updates FMOS configuration with `fmos config put` and `fmos config apply`
 
-2. **Post-Backup (Hook)**
-   - Triggered automatically by FMOS after backup completion
+3. **Post-Backup (Hook)**
+   - Triggered automatically by FMOS after backup completion (runs as root)
+   - Executes `/tmp/manage_loadavg_check.sh enable` (bypasses `/home` noexec)
    - Removes LoadAvgCheck from ignore list
    - Runs on both backup success and failure
 
 ### File Locations
 
-- **Script**: `/home/admin/manage_loadavg_check.sh` (or wherever you place it - uses absolute paths)
-- **Log File**: Located in same directory as script (e.g., `/home/admin/loadavg_check_manager.log`)
+- **Script Source**: `/home/admin/manage_loadavg_check.sh` (or wherever you place it - uses absolute paths)
+- **Script Copy**: `/tmp/manage_loadavg_check.sh` (created during setup, used by post-backup hook)
+- **Log File**: Located in same directory as source script (e.g., `/home/admin/loadavg_check_manager.log`)
 - **Cronjob**: Admin user's crontab
 - **FMOS Config**: Modified paths:
   - `os/health` - Health check ignore list
   - `os/backup/post-backup` - Post-backup script hooks (executed by backup system as root)
+
+**Note**: The `/tmp` copy is necessary because `/home` is typically mounted with `noexec` on FMOS appliances. The `/tmp` copy is automatically created/updated during `setup` and can be manually synced with the `sync` command.
 
 ## Status Output Example
 
@@ -145,6 +159,10 @@ The script automatically detects your FMOS backup schedule:
 
 Health Check Status:
   ✓ fmos.health.checks.basic.LoadAvgCheck is currently ENABLED
+
+Script Locations:
+  Source: /home/admin/manage_loadavg_check.sh
+  /tmp copy: EXISTS (✓ up to date)
 
 Backup Schedule:
   Enabled: true
@@ -167,30 +185,39 @@ Logging:
 
 If you see "Post-backup action failed: [Errno 13] Permission denied" in cron emails:
 
-**Problem**: The backup system runs as root, and the script is in `/home/admin/` where permissions or SELinux may block execution.
+**Problem**: On FMOS virtual appliances, `/home` is typically mounted with the `noexec` flag, which prevents execution of ANY files from that location - even through bash. The backup system runs as root and cannot execute scripts from `/home`.
 
-**Solution - Reconfigure with Updated Script**:
+**Solution - Use /tmp Copy** (Automatic in updated script):
 ```bash
-# The script has been updated to use explicit bash interpreter and absolute paths
-# This bypasses direct execution permission issues
+# The script now automatically copies itself to /tmp during setup
+# /tmp typically does NOT have noexec restrictions
 bash /home/admin/manage_loadavg_check.sh setup
 
-# Verify the configuration shows the full command with /bin/bash
+# Verify the /tmp copy was created
 bash /home/admin/manage_loadavg_check.sh status
 
-# Check the post-backup configuration directly
+# Check the post-backup configuration
 fmos config get os/backup/post-backup
-# Should show: "command": "/bin/bash /home/admin/manage_loadavg_check.sh enable"
+# Should show: "command": "/bin/bash /tmp/manage_loadavg_check.sh enable"
 ```
 
-**If still having issues**, verify file permissions allow read access:
+**After Script Updates**:
 ```bash
-# Check permissions - should be readable by all
-ls -l /home/admin/manage_loadavg_check.sh
-# Should show: -rwxr-xr-x or -rw-r--r--
+# If you update the script, sync the /tmp copy
+bash /home/admin/manage_loadavg_check.sh sync
 
-# If not readable, fix permissions
-chmod 755 /home/admin/manage_loadavg_check.sh
+# Verify it's up to date
+bash /home/admin/manage_loadavg_check.sh status
+```
+
+**Verify noexec is the issue**:
+```bash
+# Check if /home has noexec flag
+mount | grep /home
+# If you see "noexec" in the output, that's the issue
+
+# The /tmp directory should NOT have noexec
+mount | grep /tmp
 ```
 
 ### Permission Denied Error (Direct Execution)
@@ -205,6 +232,30 @@ bash ~/manage_loadavg_check.sh setup
 echo "alias manage_loadavg='bash ~/manage_loadavg_check.sh'" >> ~/.bashrc
 source ~/.bashrc
 manage_loadavg status
+```
+
+### /tmp Copy Missing After Reboot
+
+If backups start failing after a system reboot:
+
+**Problem**: `/tmp` is cleared on reboot, so the script copy is lost.
+
+**Solution**:
+```bash
+# Simply re-run setup or sync to recreate the /tmp copy
+bash /home/admin/manage_loadavg_check.sh setup
+
+# Or use sync if setup was already run
+bash /home/admin/manage_loadavg_check.sh sync
+
+# Verify the copy exists
+bash /home/admin/manage_loadavg_check.sh status
+```
+
+**Automatic Solution** (Optional):
+```bash
+# Add sync command to admin user's crontab to run at boot
+(crontab -l 2>/dev/null; echo "@reboot sleep 60 && /bin/bash /home/admin/manage_loadavg_check.sh sync >/dev/null 2>&1") | crontab -
 ```
 
 ### Verify Check is Being Disabled
@@ -251,6 +302,7 @@ rm -f ~/loadavg_check_manager.log
 - All operations logged for audit purposes (when logging enabled)
 - No system files are modified directly
 - Cronjob runs with admin user privileges
+- **Note on /tmp usage**: The script copies itself to `/tmp` to bypass `/home` noexec restrictions. This is necessary for FMOS appliances and is a standard workaround. The `/tmp` copy is cleared on reboot and can be recreated with the `sync` command.
 
 ## Support
 

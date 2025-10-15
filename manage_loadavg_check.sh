@@ -97,11 +97,18 @@ enable_check() {
 setup_post_backup() {
     log_message "Setting up post-backup script execution"
 
-    # Determine if logging should be disabled for post-backup execution
-    # Use explicit bash interpreter to avoid permission issues when run by root
-    post_backup_cmd="/bin/bash $SCRIPT_PATH enable"
+    # Copy script to /tmp to avoid noexec issues on /home
+    # /tmp typically allows execution even on locked-down appliances
+    local tmp_script="/tmp/manage_loadavg_check.sh"
+    cp "$SCRIPT_PATH" "$tmp_script"
+    chmod +x "$tmp_script"
+
+    log_message "Script copied to $tmp_script (bypasses /home noexec restrictions)"
+
+    # Use the /tmp copy for post-backup execution
+    post_backup_cmd="/bin/bash $tmp_script enable"
     if [ "$NO_LOG" = "1" ]; then
-        post_backup_cmd="NO_LOG=1 /bin/bash $SCRIPT_PATH enable"
+        post_backup_cmd="NO_LOG=1 /bin/bash $tmp_script enable"
     fi
 
     # Create the post-backup configuration
@@ -126,12 +133,12 @@ setup_post_backup() {
 }
 EOF
 )
-    
+
     # Apply the post-backup configuration
     echo "$post_backup_config" | fmos config put os/backup/post-backup - && fmos config apply all
-    
+
     if [ $? -eq 0 ]; then
-        log_message "Success: Post-backup script execution configured"
+        log_message "Success: Post-backup script execution configured (using $tmp_script)"
     else
         log_message "Error: Failed to configure post-backup script execution"
         return 1
@@ -189,33 +196,70 @@ setup_cronjob() {
 # Function to remove all setup
 cleanup_setup() {
     log_message "Removing all setup configurations"
-    
+
     # Remove cronjob
     crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH disable" | crontab - || true
     log_message "Cronjob removed"
-    
+
     # Clear post-backup configuration
     echo '{"post_backup": {}}' | fmos config put os/backup/post-backup - && fmos config apply all
     log_message "Post-backup configuration cleared"
-    
+
+    # Remove /tmp copy
+    rm -f /tmp/manage_loadavg_check.sh 2>/dev/null || true
+    log_message "Removed /tmp script copy"
+
     # Ensure check is enabled
     enable_check
+}
+
+# Function to sync script to /tmp
+sync_to_tmp() {
+    local tmp_script="/tmp/manage_loadavg_check.sh"
+    log_message "Syncing script to $tmp_script"
+
+    cp "$SCRIPT_PATH" "$tmp_script"
+    chmod +x "$tmp_script"
+
+    if [ $? -eq 0 ]; then
+        log_message "Success: Script synced to /tmp"
+        echo "Script synced to /tmp (required after any script updates)"
+    else
+        log_message "Error: Failed to sync script to /tmp"
+        return 1
+    fi
 }
 
 # Function to show current status
 show_status() {
     echo "=== LoadAvgCheck Manager Status ==="
     echo
-    
+
     # Check if LoadAvgCheck is currently ignored
     echo "Health Check Status:"
     current_health=$(fmos config get os/health 2>/dev/null || echo '{}')
     ignored_checks=$(echo "$current_health" | jq -r '.health.ignore_checks[]?' 2>/dev/null)
-    
+
     if echo "$ignored_checks" | grep -q "$CHECK_NAME"; then
         echo "  ✗ $CHECK_NAME is currently DISABLED"
     else
         echo "  ✓ $CHECK_NAME is currently ENABLED"
+    fi
+    echo
+
+    # Check /tmp copy status
+    echo "Script Locations:"
+    echo "  Source: $SCRIPT_PATH"
+    if [ -f "/tmp/manage_loadavg_check.sh" ]; then
+        tmp_age=$(stat -c %Y "/tmp/manage_loadavg_check.sh" 2>/dev/null || echo "0")
+        src_age=$(stat -c %Y "$SCRIPT_PATH" 2>/dev/null || echo "0")
+        if [ "$tmp_age" -lt "$src_age" ]; then
+            echo "  /tmp copy: EXISTS (⚠ OUTDATED - run 'sync' command)"
+        else
+            echo "  /tmp copy: EXISTS (✓ up to date)"
+        fi
+    else
+        echo "  /tmp copy: MISSING (⚠ run 'setup' or 'sync' command)"
     fi
     echo
     
@@ -270,6 +314,8 @@ show_status() {
 
 # Function to toggle logging
 toggle_logging() {
+    local tmp_script="/tmp/manage_loadavg_check.sh"
+
     if [ "$1" = "on" ]; then
         echo "Enabling logging..."
         # Update cronjob to add NO_LOG=0 for logging
@@ -279,8 +325,11 @@ toggle_logging() {
             cron_entry="$minute $hour * * * NO_LOG=0 /bin/bash $SCRIPT_PATH disable >/dev/null 2>&1"
             (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH disable" || true; echo "$cron_entry") | crontab -
         fi
-        # Update post-backup
-        post_backup_cmd="NO_LOG=0 /bin/bash $SCRIPT_PATH enable"
+        # Update post-backup (use /tmp copy to avoid noexec)
+        # Ensure /tmp copy exists
+        cp "$SCRIPT_PATH" "$tmp_script" 2>/dev/null || true
+        chmod +x "$tmp_script" 2>/dev/null || true
+        post_backup_cmd="NO_LOG=0 /bin/bash $tmp_script enable"
         echo "{\"post_backup\":{\"failure\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]},\"success\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]}}}" | \
             fmos config put os/backup/post-backup - && fmos config apply all
         echo "Logging has been enabled"
@@ -293,8 +342,11 @@ toggle_logging() {
             cron_entry="$minute $hour * * * /bin/bash $SCRIPT_PATH disable >/dev/null 2>&1"
             (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH disable" || true; echo "$cron_entry") | crontab -
         fi
-        # Update post-backup
-        post_backup_cmd="/bin/bash $SCRIPT_PATH enable"
+        # Update post-backup (use /tmp copy to avoid noexec)
+        # Ensure /tmp copy exists
+        cp "$SCRIPT_PATH" "$tmp_script" 2>/dev/null || true
+        chmod +x "$tmp_script" 2>/dev/null || true
+        post_backup_cmd="/bin/bash $tmp_script enable"
         echo "{\"post_backup\":{\"failure\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]},\"success\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]}}}" | \
             fmos config put os/backup/post-backup - && fmos config apply all
         echo "Logging has been disabled (back to default)"
@@ -326,6 +378,9 @@ case "${1:-}" in
     status)
         show_status
         ;;
+    sync)
+        sync_to_tmp
+        ;;
     logging)
         toggle_logging "${2:-}"
         ;;
@@ -333,7 +388,7 @@ case "${1:-}" in
         echo "FireMon OS LoadAvgCheck Manager"
         echo "================================"
         echo
-        echo "Usage: $0 [--no-log] {disable|enable|setup|cleanup|status|logging}"
+        echo "Usage: $0 [--no-log] {disable|enable|setup|cleanup|status|sync|logging}"
         echo
         echo "Commands:"
         echo "  disable  - Disable LoadAvgCheck health check"
@@ -341,6 +396,7 @@ case "${1:-}" in
         echo "  setup    - Configure cronjob and post-backup execution"
         echo "  cleanup  - Remove all configurations and enable check"
         echo "  status   - Show current configuration status"
+        echo "  sync     - Sync script to /tmp (needed after script updates)"
         echo "  logging  - Toggle logging on/off (usage: logging {on|off})"
         echo
         echo "Options:"
@@ -360,8 +416,14 @@ case "${1:-}" in
         echo "  NO_LOG=1 - Disable logging (alternative to --no-log flag)"
         echo
         echo "The script will:"
-        echo "  - Disable LoadAvgCheck 5 minutes before backup starts"
-        echo "  - Re-enable LoadAvgCheck after backup completes (success or failure)"
+        echo "  - Copy itself to /tmp to bypass /home noexec restrictions"
+        echo "  - Disable LoadAvgCheck 5 minutes before backup starts (via cron)"
+        echo "  - Re-enable LoadAvgCheck after backup completes (via post-backup hook)"
+        echo
+        echo "Notes:"
+        echo "  - /tmp copy is used for post-backup execution (bypasses noexec on /home)"
+        echo "  - After updating this script, run 'sync' to update /tmp copy"
+        echo "  - /tmp copy is recreated on each 'setup' or 'sync' command"
         echo
         exit 1
         ;;
