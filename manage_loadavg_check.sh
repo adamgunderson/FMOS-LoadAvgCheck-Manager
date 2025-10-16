@@ -284,7 +284,12 @@ disable_check() {
 
 # Function to enable LoadAvgCheck (remove from ignore list)
 enable_check() {
-    log_message "Starting: Enabling $CHECK_NAME"
+    log_message "Starting: Enabling $CHECK_NAME (with 15 minute delay)"
+
+    # Wait 15 minutes for backup load to settle before re-enabling check
+    log_message "Waiting 15 minutes for backup load average to settle..."
+    sleep 900  # 15 minutes = 900 seconds
+    log_message "Wait complete, proceeding to enable $CHECK_NAME"
 
     # Check if cronjob schedule needs updating
     check_and_update_cronjob

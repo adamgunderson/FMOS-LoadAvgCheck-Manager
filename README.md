@@ -9,6 +9,7 @@ During FMOS backup operations, system load can spike significantly, triggering t
 ## Features
 
 - **Automatic Check Management**: Disables LoadAvgCheck before backups, re-enables after completion
+- **Load Settling Delay**: Waits 15 minutes after backup before re-enabling to prevent false alerts
 - **API-Based Configuration**: Uses FMOS Control Panel API via curl (no CLI permission issues!)
 - **Secure Credential Storage**: Prompts for credentials during setup, stores them securely with 600 permissions
 - **Simple Architecture**: Script runs directly from wherever you place it - no complexity!
@@ -173,6 +174,7 @@ The script automatically detects your FMOS backup schedule:
 3. **Post-Backup (Hook)**
    - Triggered automatically by FMOS after backup completion (runs as root)
    - Executes `/bin/bash /home/admin/manage_loadavg_check.sh enable`
+   - **Waits 15 minutes** for backup load average to settle before re-enabling
    - Script uses stored API credentials to authenticate
    - Calls API to remove LoadAvgCheck from ignore list
    - Runs on both backup success and failure
