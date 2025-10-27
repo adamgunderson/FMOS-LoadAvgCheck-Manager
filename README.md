@@ -6,6 +6,38 @@ A utility script for FireMon OS (FMOS) that automatically manages the LoadAvgChe
 
 During FMOS backup operations, system load can spike significantly, triggering the LoadAvgCheck health monitor and generating unnecessary alerts. This script automatically disables the LoadAvgCheck before backups begin and re-enables it after completion, ensuring clean backup operations without false positive health alerts.
 
+## Version Comparison
+
+This project provides **two versions** of the script:
+
+### 🐍 Python Version (Recommended)
+**File:** `manage_loadavg_check.py`
+
+**Advantages:**
+- ✅ **No SELinux issues** - Python executables have proper security contexts by default
+- ✅ **No file permission problems** - Works reliably across user boundaries
+- ✅ **Better error handling** - More informative error messages
+- ✅ **Native JSON support** - No external dependencies like `jq`
+- ✅ **Cleaner code** - Easier to maintain and extend
+- ✅ **Built-in HTTP client** - Uses `requests` library
+
+**Requirements:** Python 3.6+ and `requests` module
+
+### 🐚 Bash Version (Legacy)
+**File:** `manage_loadavg_check.sh`
+
+**Advantages:**
+- ✅ No Python dependencies
+- ✅ Familiar bash syntax
+
+**Limitations:**
+- ⚠️ Can have SELinux permission issues when running from home directory
+- ⚠️ Requires specific file permissions (755) and proper security contexts
+- ⚠️ Requires `jq` for JSON processing
+- ⚠️ More complex environment variable handling
+
+**Recommendation:** Use the Python version unless you have specific requirements for bash. The Python version eliminates most permission and SELinux issues.
+
 ## Features
 
 - **Automatic Check Management**: Disables LoadAvgCheck before backups, re-enables after completion
@@ -22,6 +54,14 @@ During FMOS backup operations, system load can spike significantly, triggering t
 
 ## Requirements
 
+### Python Version (Recommended)
+- FMOS virtual appliance with admin user access
+- Python 3.6 or higher (standard on FMOS)
+- Python `requests` module: `pip3 install requests`
+- FMOS Control Panel API credentials
+- No root/sudo access required
+
+### Bash Version (Legacy)
 - FMOS virtual appliance with admin user access
 - `jq` installed (for JSON processing)
 - `curl` installed (for API calls)
@@ -31,14 +71,30 @@ During FMOS backup operations, system load can spike significantly, triggering t
 
 ## Installation
 
-### Download from GitHub
+### Python Version (Recommended)
 
 ```bash
-# Download the script directly to your home directory
+# Download the Python script
+wget -O ~/manage_loadavg_check.py https://raw.githubusercontent.com/adamgunderson/FMOS-LoadAvgCheck-Manager/main/manage_loadavg_check.py
+
+# Make it executable
+chmod +x ~/manage_loadavg_check.py
+
+# Install Python requests module (if not already installed)
+pip3 install requests
+
+# Verify installation
+python3 ~/manage_loadavg_check.py status
+```
+
+### Bash Version (Legacy)
+
+```bash
+# Download the bash script
 wget -O ~/manage_loadavg_check.sh https://raw.githubusercontent.com/adamgunderson/FMOS-LoadAvgCheck-Manager/main/manage_loadavg_check.sh
 
-# Make it executable (note: may need to run with bash due to FMOS security)
-chmod +x ~/manage_loadavg_check.sh
+# Set proper permissions (readable and executable by all, writable by owner)
+chmod 755 ~/manage_loadavg_check.sh
 
 # Verify installation
 bash ~/manage_loadavg_check.sh status
@@ -46,17 +102,26 @@ bash ~/manage_loadavg_check.sh status
 
 ### Manual Installation
 
-If `wget` is not available or you prefer manual installation:
+#### Python Version
+1. Copy `manage_loadavg_check.py` to your FMOS system
+2. Save it to your home directory
+3. Make it executable: `chmod +x ~/manage_loadavg_check.py`
+4. Install requests: `pip3 install requests`
 
-1. Copy the script content to your FMOS system
-2. Save it to your home directory as `manage_loadavg_check.sh`
-3. Make it executable: `chmod +x ~/manage_loadavg_check.sh`
+#### Bash Version
+1. Copy `manage_loadavg_check.sh` to your FMOS system
+2. Save it to your home directory
+3. Set proper permissions: `chmod 755 ~/manage_loadavg_check.sh`
+
+   **Important**: The bash script must be readable by root for post-backup execution to work!
 
 ## Quick Start
 
+### Python Version (Recommended)
+
 ```bash
 # Run the automatic setup (will prompt for API credentials)
-bash ~/manage_loadavg_check.sh setup
+python3 ~/manage_loadavg_check.py setup
 
 # You will be prompted for:
 # - Username (defaults to your current user)
@@ -64,49 +129,74 @@ bash ~/manage_loadavg_check.sh setup
 # - Password confirmation
 
 # Verify the configuration
+python3 ~/manage_loadavg_check.py status
+```
+
+### Bash Version
+
+```bash
+# Run the automatic setup (will prompt for API credentials)
+bash ~/manage_loadavg_check.sh setup
+
+# Verify the configuration
 bash ~/manage_loadavg_check.sh status
 ```
 
-This will:
+**What setup does:**
 1. Prompt for and securely store FMOS Control Panel API credentials
 2. Configure a cronjob to disable LoadAvgCheck 5 minutes before backup
 3. Set up post-backup scripts to re-enable the check after backup completion
 4. Show the current configuration status
 
+**Note about SELinux (Bash version only):** If using the bash version and you encounter permission errors during post-backup execution, SELinux may be blocking cross-user script execution. See the [Troubleshooting](#post-backup-action-failures) section. **The Python version does not have this issue.**
+
 ## Usage
 
 ### Basic Commands
+
+#### Python Version (Recommended)
+
+```bash
+# Show help and usage information
+python3 ~/manage_loadavg_check.py --help
+
+# Manually disable the LoadAvgCheck
+python3 ~/manage_loadavg_check.py disable
+
+# Manually enable the LoadAvgCheck (waits 15 minutes by default)
+python3 ~/manage_loadavg_check.py enable
+
+# Enable LoadAvgCheck immediately without waiting
+python3 ~/manage_loadavg_check.py enable --no-wait
+
+# Run full automatic setup
+python3 ~/manage_loadavg_check.py setup
+
+# Remove all configurations and cleanup
+python3 ~/manage_loadavg_check.py cleanup
+
+# Show current status and configuration
+python3 ~/manage_loadavg_check.py status
+
+# Update stored API credentials
+python3 ~/manage_loadavg_check.py credentials
+```
+
+#### Bash Version
 
 ```bash
 # Show help and usage information
 bash ~/manage_loadavg_check.sh
 
-# Manually disable the LoadAvgCheck
+# All the same commands work with bash script
 bash ~/manage_loadavg_check.sh disable
-
-# Manually enable the LoadAvgCheck (waits 15 minutes by default)
-bash ~/manage_loadavg_check.sh enable
-
-# Enable LoadAvgCheck immediately without waiting
 bash ~/manage_loadavg_check.sh enable --no-wait
-
-# Run full automatic setup
 bash ~/manage_loadavg_check.sh setup
-
-# Remove all configurations and cleanup
-bash ~/manage_loadavg_check.sh cleanup
-
-# Show current status and configuration
 bash ~/manage_loadavg_check.sh status
 
-# Update stored API credentials
-bash ~/manage_loadavg_check.sh credentials
-
-# Toggle logging on for debugging
-bash ~/manage_loadavg_check.sh logging on
-
-# Toggle logging off (return to silent mode)
-bash ~/manage_loadavg_check.sh logging off
+# Additional bash-specific commands
+bash ~/manage_loadavg_check.sh logging on   # Toggle logging on
+bash ~/manage_loadavg_check.sh logging off  # Toggle logging off
 ```
 
 ### Credential Management
@@ -268,7 +358,72 @@ bash /home/admin/manage_loadavg_check.sh setup
 
 The latest version uses `/usr/bin/env` to properly set environment variables for the FMOS backup system.
 
-#### Error: "Post-backup action failed" (Permission Denied)
+#### Error: "/bin/bash: /home/admin/manage_loadavg_check.sh: Permission denied"
+
+If you see this error, the backup system (running as root) cannot read the script file.
+
+**The Fix:**
+```bash
+# Ensure the script has proper permissions (755 = rwxr-xr-x)
+chmod 755 ~/manage_loadavg_check.sh
+
+# Verify the permissions
+ls -la ~/manage_loadavg_check.sh
+# Should show: -rwxr-xr-x (or similar with at least r-x for others)
+
+# Also ensure the home directory is accessible
+chmod 755 ~
+
+# Test that root can access the file
+sudo ls -la ~/manage_loadavg_check.sh
+```
+
+After fixing permissions, the next backup should succeed.
+
+**If permission errors persist after chmod 755:**
+
+This could be an SELinux issue. Check and fix SELinux contexts:
+
+```bash
+# Check if SELinux is enforcing
+getenforce
+
+# Check the SELinux context of the script
+ls -Z ~/manage_loadavg_check.sh
+
+# Fix SELinux context to allow root execution
+chcon -t bin_t ~/manage_loadavg_check.sh
+
+# OR restore default SELinux context
+restorecon -v ~/manage_loadavg_check.sh
+
+# If issues persist, check SELinux audit logs
+sudo ausearch -m avc -ts recent | grep manage_loadavg_check
+
+# Temporary workaround (not recommended for production):
+# Set SELinux to permissive mode to test
+sudo setenforce 0
+# Run a backup to see if it succeeds
+# Then set it back to enforcing
+sudo setenforce 1
+```
+
+**Permanent SELinux fix:**
+
+```bash
+# Move script to a system location (not home directory)
+sudo cp ~/manage_loadavg_check.sh /usr/local/bin/
+sudo chmod 755 /usr/local/bin/manage_loadavg_check.sh
+sudo chown root:root /usr/local/bin/manage_loadavg_check.sh
+
+# Update the script path and re-run setup
+cd /usr/local/bin
+sudo bash manage_loadavg_check.sh setup
+```
+
+Alternatively, create a proper SELinux policy for the script in the home directory (advanced users).
+
+#### Error: "Post-backup action failed" (Permission Denied - API Related)
 
 If you see "Post-backup action failed" errors related to permissions:
 
@@ -400,6 +555,8 @@ rm -f ~/.fmos_api_creds
 
 - Designed for FMOS virtual appliance (no root/sudo access required)
 - Script uses explicit `/bin/bash` interpreter to work when executed by backup system (root)
+- **Script permissions**: Script file must be 755 (rwxr-xr-x) to allow root to read/execute during post-backup
+- **SELinux considerations**: If SELinux is enforcing, the script may need proper security contexts (see Troubleshooting)
 - **API-based authentication**: Uses FMOS Control Panel API instead of CLI commands
 - **Credential storage**: Base64 encoded in `.fmos_api_creds` with 644 permissions (readable by all, writable by owner only)
 - **Portable design**: Dynamically detects admin username - no hardcoded values

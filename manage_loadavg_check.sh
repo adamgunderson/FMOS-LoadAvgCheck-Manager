@@ -717,8 +717,8 @@ case "${1:-}" in
         echo "Setup Instructions:"
         echo "  1. Copy this script to a permanent location (e.g., /home/admin/):"
         echo "     cp $0 /home/admin/manage_loadavg_check.sh"
-        echo "  2. Make it executable:"
-        echo "     chmod +x /home/admin/manage_loadavg_check.sh"
+        echo "  2. Set proper permissions (readable by root for post-backup execution):"
+        echo "     chmod 755 /home/admin/manage_loadavg_check.sh"
         echo "  3. Run setup:"
         echo "     /home/admin/manage_loadavg_check.sh setup"
         echo "  4. (Optional) Disable logging:"
@@ -736,6 +736,7 @@ case "${1:-}" in
         echo "Notes:"
         echo "  - Uses FMOS Control Panel API (no CLI permission issues)"
         echo "  - Credentials stored securely in: $API_CREDS_FILE"
+        echo "  - Script must be readable by root (chmod 755)"
         echo "  - Post-backup hook: /bin/bash $SCRIPT_PATH enable"
         echo "  - Updates to this script take effect immediately (no sync needed)"
         echo
