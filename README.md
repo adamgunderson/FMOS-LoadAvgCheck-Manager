@@ -9,9 +9,9 @@ During FMOS backup operations, system load can spike significantly, triggering t
 ## Features
 
 - **Automatic Check Management**: Disables LoadAvgCheck before backups, re-enables after completion
-- **Load Settling Delay**: Waits 15 minutes after backup before re-enabling to prevent false alerts
+- **Load Settling Delay**: Waits 15 minutes after backup before re-enabling to prevent false alerts (can be bypassed with `--no-wait`)
 - **API-Based Configuration**: Uses FMOS Control Panel API via curl (no CLI permission issues!)
-- **Secure Credential Storage**: Prompts for credentials during setup, stores them securely with 600 permissions
+- **Secure Credential Storage**: Prompts for credentials during setup, stores them securely with 644 permissions
 - **Simple Architecture**: Script runs directly from wherever you place it - no complexity!
 - **Smart Cronjob Sync**: Automatically detects backup schedule changes and updates cronjob timing
 - **Post-Backup Hooks**: Configures FMOS post-backup scripts for automatic re-enable
@@ -84,8 +84,11 @@ bash ~/manage_loadavg_check.sh
 # Manually disable the LoadAvgCheck
 bash ~/manage_loadavg_check.sh disable
 
-# Manually enable the LoadAvgCheck
+# Manually enable the LoadAvgCheck (waits 15 minutes by default)
 bash ~/manage_loadavg_check.sh enable
+
+# Enable LoadAvgCheck immediately without waiting
+bash ~/manage_loadavg_check.sh enable --no-wait
 
 # Run full automatic setup
 bash ~/manage_loadavg_check.sh setup
@@ -118,7 +121,7 @@ bash ~/manage_loadavg_check.sh setup
 bash ~/manage_loadavg_check.sh credentials
 
 # Credentials are stored in: ~/.fmos_api_creds (or script directory)
-# File permissions: 600 (readable only by owner)
+# File permissions: 644 (readable by all, writable by owner - allows root to read during post-backup)
 # Storage: Base64 encoded (obfuscated, not encrypted)
 ```
 
@@ -149,6 +152,33 @@ bash ~/manage_loadavg_check.sh logging off
 bash ~/manage_loadavg_check.sh logging on
 ```
 
+### Wait Control Options
+
+Control the 15-minute wait when re-enabling the health check:
+
+```bash
+# Enable with default 15 minute wait (recommended after backups)
+bash ~/manage_loadavg_check.sh enable
+
+# Enable immediately without waiting (use if manually re-enabling)
+bash ~/manage_loadavg_check.sh enable --no-wait
+
+# Use environment variable (alternative method)
+NO_WAIT=1 bash ~/manage_loadavg_check.sh enable
+
+# Combine flags
+bash ~/manage_loadavg_check.sh enable --no-wait --no-log
+```
+
+**When to use `--no-wait`:**
+- When manually re-enabling the check outside of backup operations
+- When you know the system load has already settled
+- When testing or troubleshooting the script
+
+**When NOT to use `--no-wait`:**
+- During the automated post-backup process (default behavior is correct)
+- Immediately after a backup completes (let the 15-minute wait run)
+
 ## How It Works
 
 ### Backup Schedule Detection
@@ -174,6 +204,7 @@ The script automatically detects your FMOS backup schedule:
 3. **Post-Backup (Hook)**
    - Triggered automatically by FMOS after backup completion (runs as root)
    - Executes `/bin/bash /home/admin/manage_loadavg_check.sh enable`
+   - Uses `/usr/bin/env` to set environment variables when logging control is needed
    - **Waits 15 minutes** for backup load average to settle before re-enabling
    - Script uses stored API credentials to authenticate
    - Calls API to remove LoadAvgCheck from ignore list
@@ -182,7 +213,7 @@ The script automatically detects your FMOS backup schedule:
 ### File Locations
 
 - **Script**: `/home/admin/manage_loadavg_check.sh` (or wherever you place it)
-- **Credentials**: `/home/admin/.fmos_api_creds` (base64 encoded, 600 permissions)
+- **Credentials**: `/home/admin/.fmos_api_creds` (base64 encoded, 644 permissions)
 - **Log File**: `/home/admin/loadavg_check_manager.log` (located in same directory as script)
 - **Cronjob**: Admin user's crontab
 - **FMOS Config** (via API):
@@ -222,9 +253,24 @@ Logging:
 
 ## Troubleshooting
 
-### Post-Backup Action Permission Denied
+### Post-Backup Action Failures
 
-If you see "Post-backup action failed" errors:
+#### Error: "No such file or directory: 'NO_LOG=0'"
+
+If you see this error in backup logs, it means you have an older version of the script that doesn't use `/usr/bin/env` to set environment variables.
+
+**The Fix:**
+```bash
+# Update to the latest version of the script
+# Then re-run setup to update the post-backup configuration
+bash /home/admin/manage_loadavg_check.sh setup
+```
+
+The latest version uses `/usr/bin/env` to properly set environment variables for the FMOS backup system.
+
+#### Error: "Post-backup action failed" (Permission Denied)
+
+If you see "Post-backup action failed" errors related to permissions:
 
 **The Solution:**
 The script now uses the FMOS Control Panel API instead of CLI commands, which completely eliminates permission issues!
@@ -235,8 +281,11 @@ The script now uses the FMOS Control Panel API instead of CLI commands, which co
 bash /home/admin/manage_loadavg_check.sh status
 # Should show: "Stored credentials: ✓ (user: adam)"
 
+# Verify credentials file permissions (should be 644)
+ls -la ~/.fmos_api_creds
+
 # Test API authentication manually
-bash /home/admin/manage_loadavg_check.sh enable
+bash /home/admin/manage_loadavg_check.sh enable --no-wait
 bash /home/admin/manage_loadavg_check.sh disable
 
 # Check post-backup configuration via API
@@ -250,7 +299,7 @@ curl -k -s \
 # If credentials are wrong or expired
 bash /home/admin/manage_loadavg_check.sh credentials
 
-# Re-run setup if needed
+# Re-run setup to update both credentials and post-backup config
 bash /home/admin/manage_loadavg_check.sh setup
 ```
 
@@ -318,8 +367,11 @@ tail -f ~/loadavg_check_manager.log
 If automatic re-enable fails:
 
 ```bash
-# Manually re-enable the check
+# Manually re-enable the check (waits 15 minutes)
 bash ~/manage_loadavg_check.sh enable
+
+# Or re-enable immediately without waiting
+bash ~/manage_loadavg_check.sh enable --no-wait
 
 # Verify it's enabled
 bash ~/manage_loadavg_check.sh status
@@ -349,7 +401,7 @@ rm -f ~/.fmos_api_creds
 - Designed for FMOS virtual appliance (no root/sudo access required)
 - Script uses explicit `/bin/bash` interpreter to work when executed by backup system (root)
 - **API-based authentication**: Uses FMOS Control Panel API instead of CLI commands
-- **Credential storage**: Base64 encoded in `.fmos_api_creds` with 600 permissions (read-only by owner)
+- **Credential storage**: Base64 encoded in `.fmos_api_creds` with 644 permissions (readable by all, writable by owner only)
 - **Portable design**: Dynamically detects admin username - no hardcoded values
 - All operations use FMOS Control Panel API (`https://localhost:55555/api`)
 - All operations logged for audit purposes (when logging enabled)

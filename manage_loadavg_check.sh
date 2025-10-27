@@ -50,12 +50,20 @@ ADMIN_USER=$(detect_admin_user)
 # Logging control - set to 1 to disable logging, can be overridden by environment variable
 NO_LOG="${NO_LOG:-0}"
 
-# Check for --no-log flag
+# Wait control - set to 1 to skip the 15 minute wait when re-enabling, can be overridden by environment variable
+NO_WAIT="${NO_WAIT:-0}"
+
+# Check for --no-log and --no-wait flags
 for arg in "$@"; do
     if [ "$arg" = "--no-log" ]; then
         NO_LOG=1
         # Remove --no-log from arguments
         set -- "${@/--no-log/}"
+    fi
+    if [ "$arg" = "--no-wait" ]; then
+        NO_WAIT=1
+        # Remove --no-wait from arguments
+        set -- "${@/--no-wait/}"
     fi
 done
 
@@ -107,7 +115,7 @@ ${encoded_user}
 ${encoded_pass}
 EOF
 
-    chmod 600 "$API_CREDS_FILE"
+    chmod 644 "$API_CREDS_FILE"
     log_message "Credentials stored securely in $API_CREDS_FILE"
 }
 
@@ -284,12 +292,15 @@ disable_check() {
 
 # Function to enable LoadAvgCheck (remove from ignore list)
 enable_check() {
-    log_message "Starting: Enabling $CHECK_NAME (with 15 minute delay)"
-
-    # Wait 15 minutes for backup load to settle before re-enabling check
-    log_message "Waiting 15 minutes for backup load average to settle..."
-    sleep 900  # 15 minutes = 900 seconds
-    log_message "Wait complete, proceeding to enable $CHECK_NAME"
+    if [ "$NO_WAIT" = "1" ]; then
+        log_message "Starting: Enabling $CHECK_NAME (skipping wait)"
+    else
+        log_message "Starting: Enabling $CHECK_NAME (with 15 minute delay)"
+        # Wait 15 minutes for backup load to settle before re-enabling check
+        log_message "Waiting 15 minutes for backup load average to settle..."
+        sleep 900  # 15 minutes = 900 seconds
+        log_message "Wait complete, proceeding to enable $CHECK_NAME"
+    fi
 
     # Check if cronjob schedule needs updating
     check_and_update_cronjob
@@ -331,9 +342,10 @@ setup_post_backup() {
 
     # Use the script directly from its current location
     # bash can read scripts even from noexec filesystems
+    # Use /usr/bin/env to properly set environment variables for FMOS backup system
     post_backup_cmd="/bin/bash $SCRIPT_PATH enable"
     if [ "$NO_LOG" = "1" ]; then
-        post_backup_cmd="NO_LOG=1 /bin/bash $SCRIPT_PATH enable"
+        post_backup_cmd="/usr/bin/env NO_LOG=1 /bin/bash $SCRIPT_PATH enable"
     fi
 
     # Create the post-backup configuration
@@ -610,7 +622,7 @@ toggle_logging() {
             (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH disable" || true; echo "$cron_entry") | crontab -
         fi
         # Update post-backup
-        post_backup_cmd="NO_LOG=0 /bin/bash $SCRIPT_PATH enable"
+        post_backup_cmd="/usr/bin/env NO_LOG=0 /bin/bash $SCRIPT_PATH enable"
         post_backup_json="{\"post_backup\":{\"failure\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]},\"success\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]}}}"
         api_login
         api_config_put "os/backup/post-backup" "$post_backup_json" && api_config_apply
@@ -687,11 +699,11 @@ case "${1:-}" in
         echo "FireMon OS LoadAvgCheck Manager"
         echo "================================"
         echo
-        echo "Usage: $0 [--no-log] {disable|enable|setup|cleanup|status|credentials|logging}"
+        echo "Usage: $0 [--no-log] [--no-wait] {disable|enable|setup|cleanup|status|credentials|logging}"
         echo
         echo "Commands:"
         echo "  disable      - Disable LoadAvgCheck health check"
-        echo "  enable       - Enable LoadAvgCheck health check"
+        echo "  enable       - Enable LoadAvgCheck health check (waits 15 minutes by default)"
         echo "  setup        - Configure cronjob and post-backup execution (prompts for credentials)"
         echo "  cleanup      - Remove all configurations and enable check"
         echo "  status       - Show current configuration status"
@@ -699,7 +711,8 @@ case "${1:-}" in
         echo "  logging      - Toggle logging on/off (usage: logging {on|off})"
         echo
         echo "Options:"
-        echo "  --no-log - Disable logging for this execution"
+        echo "  --no-log  - Disable logging for this execution"
+        echo "  --no-wait - Skip the 15 minute wait when enabling (use with 'enable' command)"
         echo
         echo "Setup Instructions:"
         echo "  1. Copy this script to a permanent location (e.g., /home/admin/):"
@@ -712,7 +725,8 @@ case "${1:-}" in
         echo "     /home/admin/manage_loadavg_check.sh logging off"
         echo
         echo "Environment Variables:"
-        echo "  NO_LOG=1 - Disable logging (alternative to --no-log flag)"
+        echo "  NO_LOG=1  - Disable logging (alternative to --no-log flag)"
+        echo "  NO_WAIT=1 - Skip 15 minute wait when enabling (alternative to --no-wait flag)"
         echo
         echo "The script will:"
         echo "  - Prompt for API credentials (if not already stored)"
