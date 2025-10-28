@@ -4,6 +4,11 @@ FireMon OS LoadAvgCheck Manager
 Manages LoadAvgCheck health check during FMOS backup operations
 
 Compatible with FireMon OS virtual appliance (uses pre-installed Python libraries)
+
+IMPORTANT: On FireMon OS, run this script with python3.12 (or your installed version):
+    python3.12 manage_loadavg_check.py setup
+
+The default 'python3' symlink may not have access to FireMon's pre-installed libraries.
 """
 
 import sys
@@ -105,6 +110,23 @@ class FMOSLoadAvgCheckManager:
 
         # Fallback
         return 'admin'
+
+    def _get_python_executable(self):
+        """Get the correct Python executable for this system"""
+        # On FireMon OS, prefer python3.12 (or the version that has the libraries)
+        if os.path.exists(firemon_base_path):
+            # Find the python version that matches our libraries
+            python_dirs = glob.glob(os.path.join(firemon_base_path, 'python3.*'))
+            if python_dirs:
+                # Extract version from path (e.g., python3.12)
+                for python_dir in sorted(python_dirs, reverse=True):
+                    version = os.path.basename(python_dir)  # e.g., "python3.12"
+                    python_bin = f"/usr/bin/{version}"
+                    if os.path.exists(python_bin):
+                        return python_bin
+
+        # Fallback to current executable
+        return sys.executable
 
     def log_message(self, message):
         """Log a message to file and/or console"""
@@ -445,11 +467,14 @@ class FMOSLoadAvgCheckManager:
 
         schedule = self.get_backup_schedule()
 
+        # Get the correct Python executable (python3.12 on FMOS)
+        python_exec = self._get_python_executable()
+
         # Create cron entry
         if self.no_log:
-            cron_entry = f"{schedule['pre_minute']} {schedule['pre_hour']} * * * NO_LOG=1 {sys.executable} {self.script_path} disable >/dev/null 2>&1"
+            cron_entry = f"{schedule['pre_minute']} {schedule['pre_hour']} * * * NO_LOG=1 {python_exec} {self.script_path} disable >/dev/null 2>&1"
         else:
-            cron_entry = f"{schedule['pre_minute']} {schedule['pre_hour']} * * * {sys.executable} {self.script_path} disable >/dev/null 2>&1"
+            cron_entry = f"{schedule['pre_minute']} {schedule['pre_hour']} * * * {python_exec} {self.script_path} disable >/dev/null 2>&1"
 
         try:
             # Get existing crontab
@@ -491,11 +516,14 @@ class FMOSLoadAvgCheckManager:
         """Setup post-backup script execution"""
         self.log_message("Setting up post-backup script execution")
 
+        # Get the correct Python executable (python3.12 on FMOS)
+        python_exec = self._get_python_executable()
+
         # Create command - Python doesn't need /usr/bin/env for variables
         if self.no_log:
-            post_backup_cmd = f"NO_LOG=1 {sys.executable} {self.script_path} enable"
+            post_backup_cmd = f"NO_LOG=1 {python_exec} {self.script_path} enable"
         else:
-            post_backup_cmd = f"{sys.executable} {self.script_path} enable"
+            post_backup_cmd = f"{python_exec} {self.script_path} enable"
 
         # Create post-backup configuration
         post_backup_config = {
@@ -681,7 +709,13 @@ class FMOSLoadAvgCheckManager:
         # Python environment info
         print("Python Environment:")
         print(f"  Python version: {sys.version.split()[0]}")
-        print(f"  Python executable: {sys.executable}")
+        print(f"  Current executable: {sys.executable}")
+
+        # Show which executable will be used for cron/post-backup
+        recommended_exec = self._get_python_executable()
+        if recommended_exec != sys.executable:
+            print(f"  Recommended executable: {recommended_exec}")
+            print(f"    (Will be used for cron jobs and post-backup scripts)")
 
         # Check if running on FireMon OS
         if os.path.exists(firemon_base_path):
@@ -696,6 +730,7 @@ class FMOSLoadAvgCheckManager:
                     print(f"    ... and {len(firemon_paths) - 2} more")
             else:
                 print(f"  FireMon packages: ✗ Not detected in sys.path")
+                print(f"  NOTE: You may need to run with: {recommended_exec}")
         else:
             print(f"  Platform: Non-FireMon system")
 
@@ -732,9 +767,13 @@ Environment Variables:
   FMOS_API_PASS - API password (takes priority over stored credentials)
 
 Examples:
+  # On FireMon OS, use python3.12 (or the installed version)
+  python3.12 manage_loadavg_check.py setup
+  python3.12 manage_loadavg_check.py enable --no-wait
+  python3.12 manage_loadavg_check.py status
+
+  # On non-FMOS systems, use python3
   python3 manage_loadavg_check.py setup
-  python3 manage_loadavg_check.py enable --no-wait
-  python3 manage_loadavg_check.py status
         """
     )
 
