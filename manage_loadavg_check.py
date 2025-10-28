@@ -2,6 +2,8 @@
 """
 FireMon OS LoadAvgCheck Manager
 Manages LoadAvgCheck health check during FMOS backup operations
+
+Compatible with FireMon OS virtual appliance (uses pre-installed Python libraries)
 """
 
 import sys
@@ -11,19 +13,50 @@ import base64
 import time
 import argparse
 import subprocess
+import glob
 from datetime import datetime
 from pathlib import Path
 from getpass import getpass
-import urllib3
 
-# Disable SSL warnings for self-signed certificates
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# Dynamically add FireMon package paths based on available Python versions
+# This supports Python 3.8 through 3.12+ on FireMon OS
+firemon_base_path = '/usr/lib/firemon/devpackfw/lib'
+
+# Check if FireMon package directory exists
+if os.path.exists(firemon_base_path):
+    # Find all pythonX.Y directories and sort them in reverse order (newest first)
+    python_dirs = glob.glob(os.path.join(firemon_base_path, 'python3.*'))
+    python_dirs.sort(reverse=True)
+
+    # Add all found paths to sys.path (prioritize newer versions)
+    for python_dir in python_dirs:
+        site_packages = os.path.join(python_dir, 'site-packages')
+        if os.path.exists(site_packages) and site_packages not in sys.path:
+            sys.path.insert(0, site_packages)
+
+# Try to import required modules
+try:
+    import urllib3
+    # Disable SSL warnings for self-signed certificates
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+except ImportError:
+    print("WARNING: urllib3 not available, SSL warnings may appear")
+    urllib3 = None
 
 try:
     import requests
 except ImportError:
     print("ERROR: Python 'requests' module is required")
-    print("Install it with: pip3 install requests")
+    print()
+    if os.path.exists(firemon_base_path):
+        print("Running on FireMon OS but 'requests' module not found in:")
+        print(f"  {firemon_base_path}")
+        print()
+        print("This may indicate an incomplete FMOS installation.")
+    else:
+        print("Not running on FireMon OS.")
+        print("Install requests with: pip3 install requests")
+    print()
     sys.exit(1)
 
 
@@ -643,6 +676,35 @@ class FMOSLoadAvgCheckManager:
                 size = self.log_file.stat().st_size
                 size_str = f"{size / 1024:.1f}K" if size < 1024 * 1024 else f"{size / (1024 * 1024):.1f}M"
                 print(f"  Log size: {size_str}")
+        print()
+
+        # Python environment info
+        print("Python Environment:")
+        print(f"  Python version: {sys.version.split()[0]}")
+        print(f"  Python executable: {sys.executable}")
+
+        # Check if running on FireMon OS
+        if os.path.exists(firemon_base_path):
+            print(f"  Platform: FireMon OS (detected)")
+            # Show which FireMon Python paths are in use
+            firemon_paths = [p for p in sys.path if firemon_base_path in p]
+            if firemon_paths:
+                print(f"  FireMon packages: ✓ Using {len(firemon_paths)} path(s)")
+                for path in firemon_paths[:2]:  # Show first 2 paths
+                    print(f"    - {path}")
+                if len(firemon_paths) > 2:
+                    print(f"    ... and {len(firemon_paths) - 2} more")
+            else:
+                print(f"  FireMon packages: ✗ Not detected in sys.path")
+        else:
+            print(f"  Platform: Non-FireMon system")
+
+        # Check requests module
+        try:
+            import requests
+            print(f"  requests module: ✓ {requests.__version__}")
+        except:
+            print(f"  requests module: ✗ Not available")
 
 
 def main():

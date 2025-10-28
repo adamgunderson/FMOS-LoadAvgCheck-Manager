@@ -16,12 +16,13 @@ This project provides **two versions** of the script:
 **Advantages:**
 - ✅ **No SELinux issues** - Python executables have proper security contexts by default
 - ✅ **No file permission problems** - Works reliably across user boundaries
+- ✅ **FireMon OS native** - Automatically detects and uses FMOS pre-installed Python libraries
 - ✅ **Better error handling** - More informative error messages
 - ✅ **Native JSON support** - No external dependencies like `jq`
 - ✅ **Cleaner code** - Easier to maintain and extend
 - ✅ **Built-in HTTP client** - Uses `requests` library
 
-**Requirements:** Python 3.6+ and `requests` module
+**Requirements:** Python 3.6+ (standard on FMOS) - `requests` module auto-detected on FireMon OS
 
 ### 🐚 Bash Version (Legacy)
 **File:** `manage_loadavg_check.sh`
@@ -57,9 +58,10 @@ This project provides **two versions** of the script:
 ### Python Version (Recommended)
 - FMOS virtual appliance with admin user access
 - Python 3.6 or higher (standard on FMOS)
-- Python `requests` module: `pip3 install requests`
+- Python `requests` module (pre-installed on FMOS, auto-detected by script)
 - FMOS Control Panel API credentials
 - No root/sudo access required
+- **Note:** Script automatically detects and uses FireMon's pre-installed Python libraries at `/usr/lib/firemon/devpackfw/lib/python3.*/site-packages`
 
 ### Bash Version (Legacy)
 - FMOS virtual appliance with admin user access
@@ -80,12 +82,15 @@ wget -O ~/manage_loadavg_check.py https://raw.githubusercontent.com/adamgunderso
 # Make it executable
 chmod +x ~/manage_loadavg_check.py
 
-# Install Python requests module (if not already installed)
-pip3 install requests
-
-# Verify installation
+# Verify installation (script auto-detects FireMon libraries)
 python3 ~/manage_loadavg_check.py status
+
+# The status output will show if FireMon libraries were detected:
+#   Platform: FireMon OS (detected)
+#   FireMon packages: ✓ Using X path(s)
 ```
+
+**Note:** The script automatically detects and uses FireMon's pre-installed Python libraries. No need to install `requests` manually on FMOS systems!
 
 ### Bash Version (Legacy)
 
@@ -106,7 +111,7 @@ bash ~/manage_loadavg_check.sh status
 1. Copy `manage_loadavg_check.py` to your FMOS system
 2. Save it to your home directory
 3. Make it executable: `chmod +x ~/manage_loadavg_check.py`
-4. Install requests: `pip3 install requests`
+4. Run it - the script will auto-detect FireMon's pre-installed libraries
 
 #### Bash Version
 1. Copy `manage_loadavg_check.sh` to your FMOS system
