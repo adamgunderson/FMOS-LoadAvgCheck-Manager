@@ -10,6 +10,10 @@ SCRIPT_PATH="$(readlink -f "$0")"
 SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 CHECK_NAME="fmos.health.checks.basic.LoadAvgCheck"
 
+# Method to use for configuration management
+# Options: "fmos_config" (default, uses 'fmos config' commands) or "api" (uses Control Panel API)
+CONFIG_METHOD="${CONFIG_METHOD:-fmos_config}"
+
 # Detect the admin user dynamically
 # When run from /tmp by root, we need to know which user to su to for fmos commands
 detect_admin_user() {
@@ -30,14 +34,41 @@ detect_admin_user() {
         done
     fi
 
-    # Method 3: Try to extract from script directory path
+    # Method 3: Try to extract from script directory path (only if in /home/)
     if [ -z "$detected_user" ]; then
         detected_user=$(echo "$SCRIPT_DIR" | grep -oP '(?<=/home/)[^/]+' | head -1)
     fi
 
-    # Method 4: Look for directories in /home (alphabetically sorted for consistency)
+    # Method 4: Look for common admin usernames first (admin, adam)
     if [ -z "$detected_user" ]; then
-        detected_user=$(ls -1 /home 2>/dev/null | sort | head -1)
+        for preferred_user in admin adam; do
+            if [ -d "/home/$preferred_user" ]; then
+                detected_user="$preferred_user"
+                break
+            fi
+        done
+    fi
+
+    # Method 5: Look for real login users in /home (skip system users)
+    # Prefer users in fmadmin group who have real login shells
+    if [ -z "$detected_user" ]; then
+        for homedir in /home/*; do
+            if [ -d "$homedir" ]; then
+                local username=$(basename "$homedir")
+                # Check if user has a real shell (not nologin, not false)
+                local user_shell=$(getent passwd "$username" | cut -d: -f7 2>/dev/null)
+                if [[ "$user_shell" != *"nologin"* ]] && [[ "$user_shell" != *"false"* ]] && [ -n "$user_shell" ]; then
+                    # Prefer users in fmadmin group
+                    if groups "$username" 2>/dev/null | grep -q "fmadmin"; then
+                        detected_user="$username"
+                        break
+                    elif [ -z "$detected_user" ]; then
+                        # Fallback to first real user found
+                        detected_user="$username"
+                    fi
+                fi
+            fi
+        done
     fi
 
     # Fallback: default to "admin"
@@ -50,10 +81,38 @@ detect_admin_user() {
 
 ADMIN_USER=$(detect_admin_user)
 
-# Credentials file and log file in user's home directory
-# (not script dir, as root needs to read/write during post-backup)
+# Credentials file in user's home directory
+# Log file in /var/tmp (always writable by all users including root)
 API_CREDS_FILE="/home/${ADMIN_USER}/.fmos_api_creds"
-LOG_FILE="/home/${ADMIN_USER}/loadavg_check_manager.log"
+LOG_FILE="/var/tmp/loadavg_check_manager.log"
+LOG_MAX_SIZE=1048576  # 1MB max log size before rotation
+
+# Function to run fmos commands as the correct user
+# When run by root (e.g., post-backup), fmos commands need to run as admin user
+run_fmos() {
+    if [ "$(id -u)" = "0" ]; then
+        # Running as root, switch to admin user for fmos commands
+        # fmos binary requires user to be in fmadmin group (root can't execute it)
+        # Use full path to runuser since PATH may not include /usr/sbin
+
+        # Debug logging
+        log_message "DEBUG: Running as root, switching to user: $ADMIN_USER for fmos command"
+
+        if [ -x /usr/sbin/runuser ]; then
+            /usr/sbin/runuser -u "$ADMIN_USER" -- bash -c "$*" 2>&1
+        elif [ -x /usr/bin/su ]; then
+            # Fallback to su without '-' to preserve environment
+            /usr/bin/su "$ADMIN_USER" -c "$*" 2>&1
+        else
+            # Last resort: try without switching users (will likely fail)
+            log_message "WARNING: No user switching method available"
+            eval "$@"
+        fi
+    else
+        # Running as normal user, execute directly
+        eval "$@"
+    fi
+}
 
 # Logging control - set to 1 to disable logging, can be overridden by environment variable
 NO_LOG="${NO_LOG:-0}"
@@ -61,7 +120,7 @@ NO_LOG="${NO_LOG:-0}"
 # Wait control - set to 1 to skip the 15 minute wait when re-enabling, can be overridden by environment variable
 NO_WAIT="${NO_WAIT:-0}"
 
-# Check for --no-log and --no-wait flags
+# Check for --no-log, --no-wait, --use-api, and --use-fmos-config flags
 for arg in "$@"; do
     if [ "$arg" = "--no-log" ]; then
         NO_LOG=1
@@ -72,6 +131,16 @@ for arg in "$@"; do
         NO_WAIT=1
         # Remove --no-wait from arguments
         set -- "${@/--no-wait/}"
+    fi
+    if [ "$arg" = "--use-api" ]; then
+        CONFIG_METHOD="api"
+        # Remove --use-api from arguments
+        set -- "${@/--use-api/}"
+    fi
+    if [ "$arg" = "--use-fmos-config" ]; then
+        CONFIG_METHOD="fmos_config"
+        # Remove --use-fmos-config from arguments
+        set -- "${@/--use-fmos-config/}"
     fi
 done
 
@@ -254,9 +323,19 @@ api_config_apply() {
 # Cleanup API session on exit
 trap "rm -f $API_COOKIE_FILE" EXIT
 
-# Logging function
+# Logging function with automatic rotation
 log_message() {
     if [ "$NO_LOG" = "0" ]; then
+        # Rotate log if it exceeds max size
+        if [ -f "$LOG_FILE" ]; then
+            local log_size=$(stat -f%z "$LOG_FILE" 2>/dev/null || stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)
+            if [ "$log_size" -gt "$LOG_MAX_SIZE" ]; then
+                # Keep last 500 lines and rotate
+                tail -n 500 "$LOG_FILE" > "${LOG_FILE}.tmp" 2>/dev/null || true
+                mv "${LOG_FILE}.tmp" "$LOG_FILE" 2>/dev/null || true
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] Log rotated (size exceeded ${LOG_MAX_SIZE} bytes)" >> "$LOG_FILE"
+            fi
+        fi
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
     else
         # Still output to console when running interactively, just don't log to file
@@ -266,12 +345,35 @@ log_message() {
     fi
 }
 
-# Function to disable LoadAvgCheck
-disable_check() {
-    log_message "Starting: Disabling $CHECK_NAME"
+# Function to disable LoadAvgCheck using fmos config commands
+disable_check_fmos_config() {
+    log_message "Starting: Disabling $CHECK_NAME (using fmos config)"
 
-    # Check if cronjob schedule needs updating
-    check_and_update_cronjob
+    # Get current health config and add the ignore check
+    current_config=$(run_fmos "fmos config get os/health 2>/dev/null || echo '{}'")
+
+    # Use jq to add the check to ignore_checks array (avoiding duplicates)
+    updated_config=$(echo "$current_config" | jq --arg check "$CHECK_NAME" '
+        .health.ignore_checks = (
+            (.health.ignore_checks // []) |
+            if index($check) then . else . + [$check] end
+        )
+    ')
+
+    # Apply the configuration (fmos config put updates the configuration directly)
+    echo "$updated_config" | run_fmos "fmos config put os/health -"
+
+    if [ $? -eq 0 ]; then
+        log_message "Success: $CHECK_NAME has been disabled"
+    else
+        log_message "Error: Failed to disable $CHECK_NAME"
+        return 1
+    fi
+}
+
+# Function to disable LoadAvgCheck using API
+disable_check_api() {
+    log_message "Starting: Disabling $CHECK_NAME (using API)"
 
     # Login to API
     api_login
@@ -298,20 +400,53 @@ disable_check() {
     fi
 }
 
-# Function to enable LoadAvgCheck (remove from ignore list)
-enable_check() {
-    if [ "$NO_WAIT" = "1" ]; then
-        log_message "Starting: Enabling $CHECK_NAME (skipping wait)"
-    else
-        log_message "Starting: Enabling $CHECK_NAME (with 15 minute delay)"
-        # Wait 15 minutes for backup load to settle before re-enabling check
-        log_message "Waiting 15 minutes for backup load average to settle..."
-        sleep 900  # 15 minutes = 900 seconds
-        log_message "Wait complete, proceeding to enable $CHECK_NAME"
-    fi
-
+# Function to disable LoadAvgCheck (wrapper that chooses method)
+disable_check() {
     # Check if cronjob schedule needs updating
     check_and_update_cronjob
+
+    if [ "$CONFIG_METHOD" = "api" ]; then
+        disable_check_api
+    else
+        disable_check_fmos_config
+    fi
+}
+
+# Function to enable LoadAvgCheck using fmos config commands
+enable_check_fmos_config() {
+    log_message "Starting: Enabling $CHECK_NAME (using fmos config)"
+
+    # Get current health config
+    current_config=$(run_fmos "fmos config get os/health 2>/dev/null || echo '{}'")
+
+    # Use jq to remove the check from ignore_checks array
+    updated_config=$(echo "$current_config" | jq --arg check "$CHECK_NAME" '
+        if .health.ignore_checks then
+            .health.ignore_checks = (.health.ignore_checks | map(select(. != $check)))
+        else
+            .
+        end |
+        if .health.ignore_checks == [] then
+            del(.health.ignore_checks)
+        else
+            .
+        end
+    ')
+
+    # Apply the configuration (fmos config put updates the configuration directly)
+    echo "$updated_config" | run_fmos "fmos config put os/health -"
+
+    if [ $? -eq 0 ]; then
+        log_message "Success: $CHECK_NAME has been enabled"
+    else
+        log_message "Error: Failed to enable $CHECK_NAME"
+        return 1
+    fi
+}
+
+# Function to enable LoadAvgCheck using API
+enable_check_api() {
+    log_message "Starting: Enabling $CHECK_NAME (using API)"
 
     # Login to API
     api_login
@@ -341,6 +476,28 @@ enable_check() {
     else
         log_message "Error: Failed to enable $CHECK_NAME"
         return 1
+    fi
+}
+
+# Function to enable LoadAvgCheck (wrapper that chooses method)
+enable_check() {
+    if [ "$NO_WAIT" = "1" ]; then
+        log_message "Starting: Enabling $CHECK_NAME (skipping wait)"
+    else
+        log_message "Starting: Enabling $CHECK_NAME (with 15 minute delay)"
+        # Wait 15 minutes for backup load to settle before re-enabling check
+        log_message "Waiting 15 minutes for backup load average to settle..."
+        sleep 900  # 15 minutes = 900 seconds
+        log_message "Wait complete, proceeding to enable $CHECK_NAME"
+    fi
+
+    # Check if cronjob schedule needs updating
+    check_and_update_cronjob
+
+    if [ "$CONFIG_METHOD" = "api" ]; then
+        enable_check_api
+    else
+        enable_check_fmos_config
     fi
 }
 
@@ -379,9 +536,13 @@ setup_post_backup() {
 EOF
 )
 
-    # Apply the post-backup configuration
-    api_login
-    api_config_put "os/backup/post-backup" "$post_backup_config" && api_config_apply
+    # Apply the post-backup configuration using the configured method
+    if [ "$CONFIG_METHOD" = "api" ]; then
+        api_login
+        api_config_put "os/backup/post-backup" "$post_backup_config" && api_config_apply
+    else
+        echo "$post_backup_config" | run_fmos "fmos config put os/backup/post-backup -"
+    fi
 
     if [ $? -eq 0 ]; then
         log_message "Success: Post-backup script execution configured"
@@ -394,9 +555,14 @@ EOF
 
 # Function to get backup schedule and calculate pre-backup time
 get_backup_schedule() {
-    # Get current backup schedule
-    api_login
-    local backup_config=$(api_config_get "os/backup/auto-backup")
+    # Get current backup schedule using the configured method
+    local backup_config
+    if [ "$CONFIG_METHOD" = "api" ]; then
+        api_login
+        backup_config=$(api_config_get "os/backup/auto-backup")
+    else
+        backup_config=$(run_fmos "fmos config get os/backup/auto-backup 2>/dev/null || echo '{}'")
+    fi
     [ -z "$backup_config" ] && backup_config="{}"
 
     # Extract backup time (defaults if not set)
@@ -496,9 +662,13 @@ cleanup_setup() {
     crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH disable" | crontab - || true
     log_message "Cronjob removed"
 
-    # Clear post-backup configuration
-    api_login
-    api_config_put "os/backup/post-backup" '{"post_backup": {}}' && api_config_apply
+    # Clear post-backup configuration using the configured method
+    if [ "$CONFIG_METHOD" = "api" ]; then
+        api_login
+        api_config_put "os/backup/post-backup" '{"post_backup": {}}' && api_config_apply
+    else
+        echo '{"post_backup": {}}' | run_fmos "fmos config put os/backup/post-backup -"
+    fi
     log_message "Post-backup configuration cleared"
 
     # Remove stored credentials
@@ -507,7 +677,8 @@ cleanup_setup() {
         log_message "Removed stored API credentials"
     fi
 
-    # Ensure check is enabled
+    # Ensure check is enabled (no wait - no backup just ran)
+    NO_WAIT=1
     enable_check
 }
 
@@ -516,10 +687,25 @@ show_status() {
     echo "=== LoadAvgCheck Manager Status ==="
     echo
 
+    # Show current configuration method
+    echo "Configuration Method:"
+    echo "  Method: $CONFIG_METHOD"
+    if [ "$CONFIG_METHOD" = "api" ]; then
+        echo "  Description: Using FMOS Control Panel API (requires credentials)"
+    else
+        echo "  Description: Using 'fmos config' commands (default, no credentials needed)"
+    fi
+    echo
+
     # Check if LoadAvgCheck is currently ignored
     echo "Health Check Status:"
-    api_login
-    current_health=$(api_config_get "os/health")
+    local current_health
+    if [ "$CONFIG_METHOD" = "api" ]; then
+        api_login
+        current_health=$(api_config_get "os/health")
+    else
+        current_health=$(run_fmos "fmos config get os/health 2>/dev/null || echo '{}'")
+    fi
     [ -z "$current_health" ] && current_health="{}"
     ignored_checks=$(echo "$current_health" | jq -r '.health.ignore_checks[]?' 2>/dev/null)
 
@@ -549,7 +735,12 @@ show_status() {
     
     # Show backup schedule
     echo "Backup Schedule:"
-    backup_config=$(api_config_get "os/backup/auto-backup")
+    local backup_config
+    if [ "$CONFIG_METHOD" = "api" ]; then
+        backup_config=$(api_config_get "os/backup/auto-backup")
+    else
+        backup_config=$(run_fmos "fmos config get os/backup/auto-backup 2>/dev/null || echo '{}'")
+    fi
     [ -z "$backup_config" ] && backup_config="{}"
 
     if [ "$backup_config" = "{}" ]; then
@@ -595,7 +786,12 @@ show_status() {
     
     # Show post-backup configuration
     echo "Post-backup Configuration:"
-    post_backup=$(api_config_get "os/backup/post-backup")
+    local post_backup
+    if [ "$CONFIG_METHOD" = "api" ]; then
+        post_backup=$(api_config_get "os/backup/post-backup")
+    else
+        post_backup=$(run_fmos "fmos config get os/backup/post-backup 2>/dev/null || echo '{}'")
+    fi
     [ -z "$post_backup" ] && post_backup="{}"
 
     if echo "$post_backup" | jq -e '.post_backup.success."run-command"[]' >/dev/null 2>&1; then
@@ -632,8 +828,12 @@ toggle_logging() {
         # Update post-backup
         post_backup_cmd="/usr/bin/env NO_LOG=0 /bin/bash $SCRIPT_PATH enable"
         post_backup_json="{\"post_backup\":{\"failure\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]},\"success\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]}}}"
-        api_login
-        api_config_put "os/backup/post-backup" "$post_backup_json" && api_config_apply
+        if [ "$CONFIG_METHOD" = "api" ]; then
+            api_login
+            api_config_put "os/backup/post-backup" "$post_backup_json" && api_config_apply
+        else
+            echo "$post_backup_json" | run_fmos "fmos config put os/backup/post-backup -"
+        fi
         echo "Logging has been enabled"
     elif [ "$1" = "off" ]; then
         echo "Disabling logging..."
@@ -647,8 +847,12 @@ toggle_logging() {
         # Update post-backup
         post_backup_cmd="/bin/bash $SCRIPT_PATH enable"
         post_backup_json="{\"post_backup\":{\"failure\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]},\"success\":{\"run-command\":[{\"command\":\"$post_backup_cmd\"}]}}}"
-        api_login
-        api_config_put "os/backup/post-backup" "$post_backup_json" && api_config_apply
+        if [ "$CONFIG_METHOD" = "api" ]; then
+            api_login
+            api_config_put "os/backup/post-backup" "$post_backup_json" && api_config_apply
+        else
+            echo "$post_backup_json" | run_fmos "fmos config put os/backup/post-backup -"
+        fi
         echo "Logging has been disabled (back to default)"
     else
         echo "Usage: $0 logging {on|off}"
@@ -667,16 +871,21 @@ case "${1:-}" in
     setup)
         log_message "Running full setup"
 
-        # Check if credentials exist, if not prompt for them
-        if [ ! -f "$API_CREDS_FILE" ]; then
-            echo "API credentials not found. Please provide them now."
-            if ! prompt_credentials; then
-                echo "Setup aborted: credentials required"
-                exit 1
+        # Only check for credentials if using API method
+        if [ "$CONFIG_METHOD" = "api" ]; then
+            # Check if credentials exist, if not prompt for them
+            if [ ! -f "$API_CREDS_FILE" ]; then
+                echo "API credentials not found. Please provide them now."
+                if ! prompt_credentials; then
+                    echo "Setup aborted: credentials required"
+                    exit 1
+                fi
+            else
+                echo "Using existing API credentials from $API_CREDS_FILE"
+                echo "(To update credentials, run: $0 credentials)"
             fi
         else
-            echo "Using existing API credentials from $API_CREDS_FILE"
-            echo "(To update credentials, run: $0 credentials)"
+            echo "Using 'fmos config' method (no credentials needed)"
         fi
 
         setup_post_backup
@@ -707,20 +916,22 @@ case "${1:-}" in
         echo "FireMon OS LoadAvgCheck Manager"
         echo "================================"
         echo
-        echo "Usage: $0 [--no-log] [--no-wait] {disable|enable|setup|cleanup|status|credentials|logging}"
+        echo "Usage: $0 [OPTIONS] {COMMAND}"
         echo
         echo "Commands:"
         echo "  disable      - Disable LoadAvgCheck health check"
         echo "  enable       - Enable LoadAvgCheck health check (waits 15 minutes by default)"
-        echo "  setup        - Configure cronjob and post-backup execution (prompts for credentials)"
+        echo "  setup        - Configure cronjob and post-backup execution"
         echo "  cleanup      - Remove all configurations and enable check"
         echo "  status       - Show current configuration status"
-        echo "  credentials  - Update stored API credentials"
+        echo "  credentials  - Update stored API credentials (only needed for --use-api)"
         echo "  logging      - Toggle logging on/off (usage: logging {on|off})"
         echo
         echo "Options:"
-        echo "  --no-log  - Disable logging for this execution"
-        echo "  --no-wait - Skip the 15 minute wait when enabling (use with 'enable' command)"
+        echo "  --no-log          - Disable logging for this execution"
+        echo "  --no-wait         - Skip the 15 minute wait when enabling (use with 'enable' command)"
+        echo "  --use-fmos-config - Use 'fmos config' commands (default, no credentials needed)"
+        echo "  --use-api         - Use FMOS Control Panel API (requires credentials)"
         echo
         echo "Setup Instructions:"
         echo "  1. Copy this script to a permanent location (e.g., /home/admin/):"
@@ -733,17 +944,30 @@ case "${1:-}" in
         echo "     /home/admin/manage_loadavg_check.sh logging off"
         echo
         echo "Environment Variables:"
-        echo "  NO_LOG=1  - Disable logging (alternative to --no-log flag)"
-        echo "  NO_WAIT=1 - Skip 15 minute wait when enabling (alternative to --no-wait flag)"
+        echo "  NO_LOG=1         - Disable logging (alternative to --no-log flag)"
+        echo "  NO_WAIT=1        - Skip 15 minute wait when enabling (alternative to --no-wait flag)"
+        echo "  CONFIG_METHOD    - Set to 'fmos_config' (default) or 'api'"
+        echo
+        echo "Configuration Methods:"
+        echo "  1. fmos_config (default):"
+        echo "     - Uses native 'fmos config' commands"
+        echo "     - No credentials needed"
+        echo "     - Simpler and more direct"
+        echo "     - Works when run as admin user or root (auto-switches users)"
+        echo
+        echo "  2. api (alternative):"
+        echo "     - Uses FMOS Control Panel API"
+        echo "     - Requires API credentials"
+        echo "     - Use --use-api flag or set CONFIG_METHOD=api"
+        echo "     - Credentials stored securely in: $API_CREDS_FILE"
         echo
         echo "The script will:"
-        echo "  - Prompt for API credentials (if not already stored)"
         echo "  - Configure cronjob to disable LoadAvgCheck 5 minutes before backup"
         echo "  - Configure post-backup hook to re-enable LoadAvgCheck after backup"
+        echo "  - Prompt for API credentials only if using --use-api"
         echo
         echo "Notes:"
-        echo "  - Uses FMOS Control Panel API (no CLI permission issues)"
-        echo "  - Credentials stored securely in: $API_CREDS_FILE"
+        echo "  - Default method: 'fmos config' commands (no credentials needed)"
         echo "  - Script must be readable by root (chmod 755)"
         echo "  - Post-backup hook: /bin/bash $SCRIPT_PATH enable"
         echo "  - Updates to this script take effect immediately (no sync needed)"

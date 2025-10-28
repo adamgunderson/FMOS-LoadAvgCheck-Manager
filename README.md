@@ -1,66 +1,18 @@
 # FMOS LoadAvgCheck Manager
 
-A utility script for FireMon OS (FMOS) that automatically manages the LoadAvgCheck health check during backup operations to prevent false alerts caused by high system load during backups.
+A bash utility script for FireMon OS (FMOS) that automatically manages the LoadAvgCheck health check during backup operations to prevent false alerts caused by high system load during backups.
 
 ## Overview
 
 During FMOS backup operations, system load can spike significantly, triggering the LoadAvgCheck health monitor and generating unnecessary alerts. This script automatically disables the LoadAvgCheck before backups begin and re-enables it after completion, ensuring clean backup operations without false positive health alerts.
-
-## Version Comparison
-
-This project provides **two versions** of the script:
-
-### 🐍 Python Version
-**File:** `manage_loadavg_check.py`
-
-**Advantages:**
-- ✅ **FireMon OS native** - Automatically detects and uses FMOS pre-installed Python libraries
-- ✅ **Better error handling** - More informative error messages with detailed diagnostics
-- ✅ **Native JSON support** - No external dependencies like `jq`
-- ✅ **Cleaner code** - Object-oriented design, easier to maintain and extend
-- ✅ **Built-in HTTP client** - Uses `requests` library
-
-**Considerations:**
-- ⚠️ **Python version dependent** - Requires `python3.12` on current FMOS versions (may change with OS updates)
-- ⚠️ Must verify Python library paths match installed version
-
-**Requirements:** Python 3.6+ (standard on FMOS) - `requests` module auto-detected on FireMon OS
-
-### 🐚 Bash Version
-**File:** `manage_loadavg_check.sh`
-
-**Advantages:**
-- ✅ **No version dependencies** - Bash doesn't change versions like Python does
-- ✅ **More stable long-term** - Not affected by Python version updates
-- ✅ **Familiar syntax** - Standard bash/shell scripting
-- ✅ **Simpler execution** - Just `bash script.sh`, no version-specific interpreter
-
-**Requirements:**
-- `jq` for JSON processing (standard on FMOS)
-- `curl` for API calls (standard on FMOS)
-
-**Both versions work equally well on FireMon OS when installed to `/var/lib/backup/firemon/` to avoid SELinux issues.**
-
-### Which Version Should You Use?
-
-**Choose Python if:**
-- You prefer modern error handling and diagnostics
-- You want native JSON manipulation without external tools
-- You don't mind specifying `python3.12` (or updating commands if Python version changes)
-
-**Choose Bash if:**
-- You want long-term stability without version dependencies
-- You prefer traditional shell scripting
-- You want to avoid potential Python version conflicts during FMOS upgrades
-
-**Both versions have identical functionality and work reliably on FireMon OS.**
-
 ## Features
 
 - **Automatic Check Management**: Disables LoadAvgCheck before backups, re-enables after completion
 - **Load Settling Delay**: Waits 15 minutes after backup before re-enabling to prevent false alerts (can be bypassed with `--no-wait`)
-- **API-Based Configuration**: Uses FMOS Control Panel API via curl (no CLI permission issues!)
-- **Secure Credential Storage**: Prompts for credentials during setup, stores them securely with 644 permissions
+- **Dual Configuration Methods**:
+  - **fmos config (default)**: Uses native `fmos config` commands - no credentials needed!
+  - **API (alternative)**: Uses FMOS Control Panel API - requires credentials but useful in some scenarios
+- **No Credentials Required (default)**: Uses `fmos config` commands with automatic user switching when run as root
 - **Simple Architecture**: Script runs directly from wherever you place it - no complexity!
 - **Smart Cronjob Sync**: Automatically detects backup schedule changes and updates cronjob timing
 - **Post-Backup Hooks**: Configures FMOS post-backup scripts for automatic re-enable
@@ -71,57 +23,19 @@ This project provides **two versions** of the script:
 
 ## Requirements
 
-### Python Version (Recommended)
 - FMOS virtual appliance with admin user access
-- Python 3.6 or higher (standard on FMOS)
-- Python `requests` module (pre-installed on FMOS, auto-detected by script)
-- FMOS Control Panel API credentials
-- No root/sudo access required
-- **Note:** Script automatically detects and uses FireMon's pre-installed Python libraries at `/usr/lib/firemon/devpackfw/lib/python3.*/site-packages`
-
-### Bash Version (Legacy)
-- FMOS virtual appliance with admin user access
-- `jq` installed (for JSON processing)
-- `curl` installed (for API calls)
+- `jq` installed (for JSON processing, standard on FMOS)
+- `curl` installed (only needed for `--use-api` mode, standard on FMOS)
 - Bash shell (standard on FMOS)
-- FMOS Control Panel API credentials
+- FMOS Control Panel API credentials (only if using `--use-api` flag)
 - No root/sudo access required
 
 ## Installation
 
-### Python Version (Recommended)
-
 **On FireMon OS, install to `/var/lib/backup/firemon/` to avoid SELinux issues:**
 
 ```bash
-# Download the Python script to the backup directory (avoids SELinux issues)
-cd /var/lib/backup/firemon
-wget -O manage_loadavg_check.py https://raw.githubusercontent.com/adamgunderson/FMOS-LoadAvgCheck-Manager/main/manage_loadavg_check.py
-
-# Set proper permissions
-chmod 755 manage_loadavg_check.py
-
-# Verify installation (use python3.12 on FMOS)
-python3.12 ./manage_loadavg_check.py status
-
-# The status output will show if FireMon libraries were detected:
-#   Platform: FireMon OS (detected)
-#   FireMon packages: ✓ Using 1 path(s)
-#   requests module: ✓ 2.27.1
-```
-
-**Important Notes:**
-- **Installation Location**: Use `/var/lib/backup/firemon/` on FireMon OS - this directory has the proper SELinux context (`firemon_backup_t`) that allows root to execute scripts during post-backup operations.
-- **On FireMon OS, you must use `python3.12`** (or the specific Python version installed). The default `python3` symlink may not have access to FireMon's pre-installed libraries.
-- **Why not home directory?** SELinux in enforcing mode prevents root from executing scripts from user home directories (`user_home_t` context), causing "Permission denied" errors during post-backup execution.
-- The script automatically detects and uses libraries from `/usr/lib/firemon/devpackfw/lib/python3.12/site-packages`.
-
-### Bash Version
-
-**On FireMon OS, install to `/var/lib/backup/firemon/` to avoid SELinux issues:**
-
-```bash
-# Download the bash script to the backup directory (avoids SELinux issues)
+# Download the script to the backup directory (avoids SELinux issues)
 cd /var/lib/backup/firemon
 wget -O manage_loadavg_check.sh https://raw.githubusercontent.com/adamgunderson/FMOS-LoadAvgCheck-Manager/main/manage_loadavg_check.sh
 
@@ -135,56 +49,23 @@ bash ./manage_loadavg_check.sh status
 **Important Notes:**
 - **Installation Location**: Use `/var/lib/backup/firemon/` on FireMon OS - this directory has the proper SELinux context (`firemon_backup_t`) that allows root to execute scripts during post-backup operations.
 - **Why not home directory?** SELinux in enforcing mode prevents root from executing scripts from user home directories (`user_home_t` context), causing "Permission denied" errors during post-backup execution.
-- **Version stability**: Bash version doesn't depend on specific Python versions, making it more stable across FMOS upgrades.
 
 ### Manual Installation
 
-#### Python Version
-1. Copy `manage_loadavg_check.py` to your FMOS system
-2. Save it to `/var/lib/backup/firemon/` directory (proper SELinux context for FMOS)
-3. Set proper permissions:
-   ```bash
-   chmod 755 /var/lib/backup/firemon/manage_loadavg_check.py
-   ```
-4. Run it - the script will auto-detect FireMon's pre-installed libraries
-
-#### Bash Version
 1. Copy `manage_loadavg_check.sh` to your FMOS system
 2. Save it to `/var/lib/backup/firemon/` directory (proper SELinux context for FMOS)
 3. Set proper permissions:
    ```bash
    chmod 755 /var/lib/backup/firemon/manage_loadavg_check.sh
    ```
-4. Run it - standard bash, no version dependencies
 
 ## Quick Start
 
-### Python Version (Recommended)
-
 ```bash
 # Navigate to the backup directory (proper SELinux context for FMOS)
 cd /var/lib/backup/firemon
 
-# Run the automatic setup (will prompt for API credentials)
-# Use python3.12 on FireMon OS
-python3.12 ./manage_loadavg_check.py setup
-
-# You will be prompted for:
-# - Username (defaults to your current user)
-# - Password (hidden input)
-# - Password confirmation
-
-# Verify the configuration
-python3.12 ./manage_loadavg_check.py status
-```
-
-### Bash Version
-
-```bash
-# Navigate to the backup directory (proper SELinux context for FMOS)
-cd /var/lib/backup/firemon
-
-# Run the automatic setup (will prompt for API credentials)
+# Run the automatic setup (no credentials needed with default method)
 bash ./manage_loadavg_check.sh setup
 
 # Verify the configuration
@@ -192,51 +73,20 @@ bash ./manage_loadavg_check.sh status
 ```
 
 **What setup does:**
-1. Prompt for and securely store FMOS Control Panel API credentials
-2. Configure a cronjob to disable LoadAvgCheck 5 minutes before backup
-3. Set up post-backup scripts to re-enable the check after backup completion
-4. Show the current configuration status
+1. Configure a cronjob to disable LoadAvgCheck 5 minutes before backup
+2. Set up post-backup scripts to re-enable the check after backup completion
+3. Show the current configuration status
+4. **(Optional)** Prompt for and securely store FMOS Control Panel API credentials (only if using `--use-api` flag)
 
-**Note about SELinux (Bash version only):** If using the bash version and you encounter permission errors during post-backup execution, SELinux may be blocking cross-user script execution. See the [Troubleshooting](#post-backup-action-failures) section. **The Python version does not have this issue.**
+**Configuration Methods:**
+- **Default (fmos config)**: Uses `fmos config` commands - no credentials needed
+- **Alternative (API)**: Add `--use-api` flag to use FMOS Control Panel API - requires credentials
+
+**Note about SELinux:** If you encounter permission errors during post-backup execution, SELinux may be blocking script execution. See the [Troubleshooting](#post-backup-action-failures) section.
 
 ## Usage
 
 ### Basic Commands
-
-#### Python Version (Recommended)
-
-```bash
-# On FireMon OS, the script should be in /var/lib/backup/firemon/
-# Use python3.12 on FireMon OS (or python3 on non-FMOS systems)
-
-cd /var/lib/backup/firemon
-
-# Show help and usage information
-python3.12 ./manage_loadavg_check.py --help
-
-# Manually disable the LoadAvgCheck
-python3.12 ./manage_loadavg_check.py disable
-
-# Manually enable the LoadAvgCheck (waits 15 minutes by default)
-python3.12 ./manage_loadavg_check.py enable
-
-# Enable LoadAvgCheck immediately without waiting
-python3.12 ./manage_loadavg_check.py enable --no-wait
-
-# Run full automatic setup
-python3.12 ./manage_loadavg_check.py setup
-
-# Remove all configurations and cleanup
-python3.12 ./manage_loadavg_check.py cleanup
-
-# Show current status and configuration
-python3.12 ./manage_loadavg_check.py status
-
-# Update stored API credentials
-python3.12 ./manage_loadavg_check.py credentials
-```
-
-#### Bash Version
 
 ```bash
 # On FireMon OS, the script should be in /var/lib/backup/firemon/
@@ -245,44 +95,83 @@ cd /var/lib/backup/firemon
 # Show help and usage information
 bash ./manage_loadavg_check.sh
 
-# All the same commands work with bash script
+# Manually disable the LoadAvgCheck
 bash ./manage_loadavg_check.sh disable
+
+# Manually enable the LoadAvgCheck (waits 15 minutes by default)
+bash ./manage_loadavg_check.sh enable
+
+# Enable LoadAvgCheck immediately without waiting
 bash ./manage_loadavg_check.sh enable --no-wait
+
+# Run full automatic setup
 bash ./manage_loadavg_check.sh setup
+
+# Remove all configurations and cleanup
+bash ./manage_loadavg_check.sh cleanup
+
+# Show current status and configuration
 bash ./manage_loadavg_check.sh status
 
-# Additional bash-specific commands
-bash ./manage_loadavg_check.sh logging on   # Toggle logging on
-bash ./manage_loadavg_check.sh logging off  # Toggle logging off
+# Update stored API credentials (only needed for --use-api mode)
+bash ./manage_loadavg_check.sh credentials
+
+# Toggle logging on/off
+bash ./manage_loadavg_check.sh logging on   # Enable logging
+bash ./manage_loadavg_check.sh logging off  # Disable logging
 ```
 
-### Credential Management
+### Configuration Methods
 
-The script uses the FMOS Control Panel API and requires credentials:
+The script supports two configuration methods:
+
+#### Method 1: fmos config (Default - Recommended)
+
+**No credentials required!** Uses native `fmos config` commands:
 
 ```bash
-# During setup, you'll be prompted for credentials
-# (Script should be in /var/lib/backup/firemon/ on FMOS)
+# Standard usage (no credentials needed)
 cd /var/lib/backup/firemon
 bash ./manage_loadavg_check.sh setup
 
+# The script automatically switches to the admin user when run as root
+# No API credentials or manual configuration needed
+```
+
+#### Method 2: API (Alternative)
+
+Uses the FMOS Control Panel API - requires credentials:
+
+```bash
+# Use API method during setup
+cd /var/lib/backup/firemon
+bash ./manage_loadavg_check.sh --use-api setup
+
+# Or set environment variable
+CONFIG_METHOD=api bash ./manage_loadavg_check.sh setup
+
 # To update credentials later
-bash ./manage_loadavg_check.sh credentials
+bash ./manage_loadavg_check.sh --use-api credentials
 
 # Credentials are stored in: ~/.fmos_api_creds (user home directory)
 # File permissions: 644 (readable by all, writable by owner - allows root to read during post-backup)
 # Storage: Base64 encoded (obfuscated, not encrypted)
 ```
 
-**Alternative: Environment Variables**
+**API Method - Alternative with Environment Variables:**
 ```bash
 # Set credentials via environment (takes priority over stored file)
 export FMOS_API_USER=firemon
 export FMOS_API_PASS='your_password'
 
 cd /var/lib/backup/firemon
-bash ./manage_loadavg_check.sh enable
+bash ./manage_loadavg_check.sh --use-api enable
 ```
+
+**When to use API method:**
+- When `fmos config` commands are not available or restricted
+- When you prefer API-based configuration management
+- For compatibility with older setups that used the API method
 
 ### Logging Options
 
@@ -354,39 +243,40 @@ The script automatically detects your FMOS backup schedule:
 
 2. **Pre-Backup (Cronjob)**
    - Runs 5 minutes before scheduled backup
-   - Calls API to add `fmos.health.checks.basic.LoadAvgCheck` to ignore list
-   - Applies configuration changes via API
+   - Uses configured method (default: `fmos config`, alternative: API) to add `fmos.health.checks.basic.LoadAvgCheck` to ignore list
+   - Applies configuration changes
 
 3. **Post-Backup (Hook)**
    - Triggered automatically by FMOS after backup completion (runs as root)
    - Executes `/bin/bash /home/admin/manage_loadavg_check.sh enable`
    - Uses `/usr/bin/env` to set environment variables when logging control is needed
    - **Waits 15 minutes** for backup load average to settle before re-enabling
-   - Script uses stored API credentials to authenticate
-   - Calls API to remove LoadAvgCheck from ignore list
+   - Script uses configured method (default: `fmos config` with automatic user switching, alternative: API with stored credentials)
+   - Removes LoadAvgCheck from ignore list
    - Runs on both backup success and failure
 
 ### File Locations
 
-**Python Version (Recommended):**
-- **Script**: `/var/lib/backup/firemon/manage_loadavg_check.py` (proper SELinux context)
-- **Credentials**: `/home/<user>/.fmos_api_creds` (base64 encoded, 644 permissions)
-- **Log File**: `/home/<user>/loadavg_check_manager.log` (located in user's home directory)
+- **Script**: `/var/lib/backup/firemon/manage_loadavg_check.sh` (proper SELinux context)
+- **Credentials**: `/home/<user>/.fmos_api_creds` (base64 encoded, 644 permissions, only if using `--use-api`)
+- **Log File**: `/var/tmp/loadavg_check_manager.log` (auto-rotates at 1MB, keeps last 500 lines)
 - **Cronjob**: User's crontab
-- **FMOS Config** (via API):
+- **FMOS Config** (via `fmos config` commands or API):
   - `os/health` - Health check ignore list
   - `os/backup/post-backup` - Post-backup script hooks (executed by backup system as root)
 
-**Bash Version:**
-- **Script**: `/var/lib/backup/firemon/manage_loadavg_check.sh` (proper SELinux context)
-- All other locations same as Python version
+**Note**: The script runs directly from `/var/lib/backup/firemon/`. Updates take effect immediately with no sync needed.
 
-**Note**: The script runs directly from wherever you place it. Updates take effect immediately with no sync needed. On FMOS, `/var/lib/backup/firemon/` is required for **both Python and Bash versions** to work with SELinux.
+**Configuration Method**: Defaults to using `fmos config` commands (no credentials needed). Use `--use-api` flag to use the API method instead.
 
 ## Status Output Example
 
 ```
 === LoadAvgCheck Manager Status ===
+
+Configuration Method:
+  Method: fmos_config
+  Description: Using 'fmos config' commands (default, no credentials needed)
 
 Health Check Status:
   ✓ fmos.health.checks.basic.LoadAvgCheck is currently ENABLED
@@ -395,7 +285,7 @@ Script Location:
   /home/admin/manage_loadavg_check.sh
 
 API Authentication:
-  Stored credentials: ✓ (user: adam)
+  No credentials configured
 
 Backup Schedule:
   Enabled: true
@@ -408,8 +298,8 @@ Post-backup Configuration:
   ✓ Post-backup script configured
 
 Logging:
-  Logging to: /home/admin/loadavg_check_manager.log
-  Log size: 4.2K
+  Logging to: /var/tmp/loadavg_check_manager.log
+  Log size: 4.0K
 ```
 
 ## Troubleshooting
@@ -488,9 +378,8 @@ fmos backup
 **Why `/var/lib/backup/firemon/` works:**
 - Has `firemon_backup_t` SELinux context (not `user_home_t`)
 - Root can execute scripts from this location
-- Same solution as Python version - both scripts have the same SELinux requirements
-
-After moving and re-running setup, the backup should succeed.
+- Won't be cleaned up on reboot (unlike /tmp)
+- Logically related to backup operations
 
 #### Understanding SELinux on FireMon OS
 
@@ -503,11 +392,11 @@ getenforce
 # Output: Enforcing
 
 # Check the SELinux context of your script
-ls -Z ~/manage_loadavg_check.py
+ls -Z ~/manage_loadavg_check.sh
 # Output: unconfined_u:object_r:user_home_t:s0  <- This is the problem!
 
 # Check a working location
-ls -Z /var/lib/backup/firemon/manage_loadavg_check.py
+ls -Z /var/lib/backup/firemon/manage_loadavg_check.sh
 # Output: unconfined_u:object_r:firemon_backup_t:s0  <- This works!
 ```
 
@@ -660,13 +549,15 @@ rm -f ~/.fmos_api_creds
 - Designed for FMOS virtual appliance (no root/sudo access required)
 - Script uses explicit `/bin/bash` interpreter to work when executed by backup system (root)
 - **Script permissions**: Script file must be 755 (rwxr-xr-x) to allow root to read/execute during post-backup
-- **SELinux requirements**: Both Python and Bash versions must be installed to `/var/lib/backup/firemon/` on FMOS to work with SELinux enforcing mode
-- **API-based authentication**: Uses FMOS Control Panel API instead of CLI commands
-- **Credential storage**: Base64 encoded in `.fmos_api_creds` with 644 permissions (readable by all, writable by owner only)
+- **SELinux requirements**: Must be installed to `/var/lib/backup/firemon/` on FMOS to work with SELinux enforcing mode
+- **Configuration methods**:
+  - **fmos config (default)**: Uses native commands, automatically switches to admin user when run as root, no credentials needed
+  - **API (alternative)**: Uses FMOS Control Panel API (`https://localhost:55555/api`), requires credentials
+- **Credential storage (API method only)**: Base64 encoded in `.fmos_api_creds` with 644 permissions (readable by all, writable by owner only)
 - **Portable design**: Dynamically detects admin username - no hardcoded values
-- All operations use FMOS Control Panel API (`https://localhost:55555/api`)
-- All operations logged for audit purposes (when logging enabled)
-- No direct system file modifications - all changes via API
+- **Log rotation**: Automatic rotation at 1MB, keeps last 500 lines to prevent disk space issues
+- All operations logged for audit purposes (when logging enabled) to `/var/tmp/loadavg_check_manager.log`
+- No direct system file modifications - all changes via `fmos config` commands or API
 - Cronjob runs with admin user privileges
 - **Simple architecture**: Script runs from `/var/lib/backup/firemon/` on FMOS - no temporary copies needed
 
