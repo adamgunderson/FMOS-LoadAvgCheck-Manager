@@ -262,12 +262,14 @@ The script uses the FMOS Control Panel API and requires credentials:
 
 ```bash
 # During setup, you'll be prompted for credentials
-bash ~/manage_loadavg_check.sh setup
+# (Script should be in /var/lib/backup/firemon/ on FMOS)
+cd /var/lib/backup/firemon
+bash ./manage_loadavg_check.sh setup
 
 # To update credentials later
-bash ~/manage_loadavg_check.sh credentials
+bash ./manage_loadavg_check.sh credentials
 
-# Credentials are stored in: ~/.fmos_api_creds (or script directory)
+# Credentials are stored in: ~/.fmos_api_creds (user home directory)
 # File permissions: 644 (readable by all, writable by owner - allows root to read during post-backup)
 # Storage: Base64 encoded (obfuscated, not encrypted)
 ```
@@ -275,10 +277,11 @@ bash ~/manage_loadavg_check.sh credentials
 **Alternative: Environment Variables**
 ```bash
 # Set credentials via environment (takes priority over stored file)
-export FMOS_API_USER=adam
+export FMOS_API_USER=firemon
 export FMOS_API_PASS='your_password'
 
-bash ~/manage_loadavg_check.sh enable
+cd /var/lib/backup/firemon
+bash ./manage_loadavg_check.sh enable
 ```
 
 ### Logging Options
@@ -286,17 +289,20 @@ bash ~/manage_loadavg_check.sh enable
 Control logging behavior for debugging or production use:
 
 ```bash
+# Navigate to script location
+cd /var/lib/backup/firemon
+
 # Run any command without logging (one-time)
-bash ~/manage_loadavg_check.sh --no-log setup
+bash ./manage_loadavg_check.sh --no-log setup
 
 # Use environment variable (alternative method)
-NO_LOG=1 bash ~/manage_loadavg_check.sh disable
+NO_LOG=1 bash ./manage_loadavg_check.sh disable
 
 # Permanently disable logging for all automated runs
-bash ~/manage_loadavg_check.sh logging off
+bash ./manage_loadavg_check.sh logging off
 
 # Re-enable logging
-bash ~/manage_loadavg_check.sh logging on
+bash ./manage_loadavg_check.sh logging on
 ```
 
 ### Wait Control Options
@@ -304,17 +310,20 @@ bash ~/manage_loadavg_check.sh logging on
 Control the 15-minute wait when re-enabling the health check:
 
 ```bash
+# Navigate to script location
+cd /var/lib/backup/firemon
+
 # Enable with default 15 minute wait (recommended after backups)
-bash ~/manage_loadavg_check.sh enable
+bash ./manage_loadavg_check.sh enable
 
 # Enable immediately without waiting (use if manually re-enabling)
-bash ~/manage_loadavg_check.sh enable --no-wait
+bash ./manage_loadavg_check.sh enable --no-wait
 
 # Use environment variable (alternative method)
-NO_WAIT=1 bash ~/manage_loadavg_check.sh enable
+NO_WAIT=1 bash ./manage_loadavg_check.sh enable
 
 # Combine flags
-bash ~/manage_loadavg_check.sh enable --no-wait --no-log
+bash ./manage_loadavg_check.sh enable --no-wait --no-log
 ```
 
 **When to use `--no-wait`:**
@@ -539,24 +548,26 @@ curl -k -s \
 **Update Credentials:**
 ```bash
 # If credentials are wrong or expired
-bash /home/admin/manage_loadavg_check.sh credentials
+cd /var/lib/backup/firemon
+bash ./manage_loadavg_check.sh credentials
 
 # Re-run setup to update both credentials and post-backup config
-bash /home/admin/manage_loadavg_check.sh setup
+bash ./manage_loadavg_check.sh setup
 ```
 
-### Permission Denied Error (Direct Execution)
+### Creating Convenience Aliases
 
-If you encounter "Permission denied" when executing the script directly:
+For easier access to the script:
 
 ```bash
-# FMOS may have noexec on home directory, use bash explicitly
-bash ~/manage_loadavg_check.sh setup
-
-# Create an alias for convenience
-echo "alias manage_loadavg='bash ~/manage_loadavg_check.sh'" >> ~/.bashrc
+# Create an alias to run the script from anywhere
+echo "alias loadavg-manager='cd /var/lib/backup/firemon && bash ./manage_loadavg_check.sh'" >> ~/.bashrc
 source ~/.bashrc
-manage_loadavg status
+
+# Now you can run commands from anywhere:
+loadavg-manager status
+loadavg-manager enable --no-wait
+loadavg-manager disable
 ```
 
 
@@ -578,12 +589,12 @@ The script automatically detects when the backup schedule has changed and update
 
 # Or when running status:
 Cronjob Status:
-  43 23 * * * /bin/bash /home/admin/manage_loadavg_check.sh disable >/dev/null 2>&1
+  43 23 * * * /bin/bash /var/lib/backup/firemon/manage_loadavg_check.sh disable >/dev/null 2>&1
 
   ⚠ WARNING: Cronjob schedule is out of sync!
   Current cronjob: 23:43
   Should be:       01:55 (5 min before backup at 02:00)
-  Run 'bash /home/admin/manage_loadavg_check.sh enable' or 'disable' to auto-update
+  Run: cd /var/lib/backup/firemon && bash ./manage_loadavg_check.sh enable
 ```
 
 **How it works:**
@@ -609,14 +620,17 @@ tail -f ~/loadavg_check_manager.log
 If automatic re-enable fails:
 
 ```bash
+# Navigate to script location
+cd /var/lib/backup/firemon
+
 # Manually re-enable the check (waits 15 minutes)
-bash ~/manage_loadavg_check.sh enable
+bash ./manage_loadavg_check.sh enable
 
 # Or re-enable immediately without waiting
-bash ~/manage_loadavg_check.sh enable --no-wait
+bash ./manage_loadavg_check.sh enable --no-wait
 
 # Verify it's enabled
-bash ~/manage_loadavg_check.sh status
+bash ./manage_loadavg_check.sh status
 ```
 
 ### Complete Removal
@@ -624,16 +638,19 @@ bash ~/manage_loadavg_check.sh status
 To completely remove all configurations:
 
 ```bash
+# Navigate to script location
+cd /var/lib/backup/firemon
+
 # Remove all setup and re-enable checks
 # This removes:
 #   - Pre-backup cronjob
 #   - Post-backup hook configuration
 #   - Stored API credentials
 #   - Re-enables LoadAvgCheck
-bash ~/manage_loadavg_check.sh cleanup
+bash ./manage_loadavg_check.sh cleanup
 
 # Optionally remove the script and logs
-rm -f ~/manage_loadavg_check.sh
+rm -f /var/lib/backup/firemon/manage_loadavg_check.sh
 rm -f ~/loadavg_check_manager.log
 rm -f ~/.fmos_api_creds
 ```
@@ -643,7 +660,7 @@ rm -f ~/.fmos_api_creds
 - Designed for FMOS virtual appliance (no root/sudo access required)
 - Script uses explicit `/bin/bash` interpreter to work when executed by backup system (root)
 - **Script permissions**: Script file must be 755 (rwxr-xr-x) to allow root to read/execute during post-backup
-- **SELinux considerations**: If SELinux is enforcing, the script may need proper security contexts (see Troubleshooting)
+- **SELinux requirements**: Both Python and Bash versions must be installed to `/var/lib/backup/firemon/` on FMOS to work with SELinux enforcing mode
 - **API-based authentication**: Uses FMOS Control Panel API instead of CLI commands
 - **Credential storage**: Base64 encoded in `.fmos_api_creds` with 644 permissions (readable by all, writable by owner only)
 - **Portable design**: Dynamically detects admin username - no hardcoded values
@@ -651,7 +668,7 @@ rm -f ~/.fmos_api_creds
 - All operations logged for audit purposes (when logging enabled)
 - No direct system file modifications - all changes via API
 - Cronjob runs with admin user privileges
-- **Simple architecture**: Script runs from wherever placed - no temporary copies needed
+- **Simple architecture**: Script runs from `/var/lib/backup/firemon/` on FMOS - no temporary copies needed
 
 ## Support
 
@@ -659,7 +676,7 @@ For issues or questions:
 1. Check the log file: `cat ~/loadavg_check_manager.log`
 2. Verify FMOS backup configuration: `fmos config get os/backup/auto-backup`
 3. Check health configuration: `fmos config get os/health`
-4. Run status command: `bash ~/manage_loadavg_check.sh status`
+4. Run status command: `cd /var/lib/backup/firemon && bash ./manage_loadavg_check.sh status`
 
 ## License
 

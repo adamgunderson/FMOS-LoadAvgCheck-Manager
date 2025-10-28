@@ -8,7 +8,6 @@ set -e
 # Get the absolute path to this script (works regardless of $HOME)
 SCRIPT_PATH="$(readlink -f "$0")"
 SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
-LOG_FILE="${SCRIPT_DIR}/loadavg_check_manager.log"
 CHECK_NAME="fmos.health.checks.basic.LoadAvgCheck"
 
 # Detect the admin user dynamically
@@ -19,12 +18,16 @@ detect_admin_user() {
     # Method 1: If not running as root, use current user
     if [ "$USER" != "root" ] && [ -n "$USER" ]; then
         detected_user="$USER"
-    # Method 2: Try to find the source script in /home and get its owner
-    elif [ -f "/home/*/manage_loadavg_check.sh" ] 2>/dev/null; then
-        local source_script=$(ls /home/*/manage_loadavg_check.sh 2>/dev/null | head -1)
-        if [ -n "$source_script" ]; then
-            detected_user=$(stat -c '%U' "$source_script" 2>/dev/null)
-        fi
+    fi
+
+    # Method 2: Check owner of credentials file (most reliable when running as root)
+    if [ -z "$detected_user" ]; then
+        for creds in /home/*/.fmos_api_creds; do
+            if [ -f "$creds" ]; then
+                detected_user=$(stat -c '%U' "$creds" 2>/dev/null)
+                break
+            fi
+        done
     fi
 
     # Method 3: Try to extract from script directory path
@@ -32,9 +35,9 @@ detect_admin_user() {
         detected_user=$(echo "$SCRIPT_DIR" | grep -oP '(?<=/home/)[^/]+' | head -1)
     fi
 
-    # Method 4: Look for first non-root user in /home
+    # Method 4: Look for directories in /home (alphabetically sorted for consistency)
     if [ -z "$detected_user" ]; then
-        detected_user=$(ls -1 /home 2>/dev/null | head -1)
+        detected_user=$(ls -1 /home 2>/dev/null | sort | head -1)
     fi
 
     # Fallback: default to "admin"
@@ -46,6 +49,11 @@ detect_admin_user() {
 }
 
 ADMIN_USER=$(detect_admin_user)
+
+# Credentials file and log file in user's home directory
+# (not script dir, as root needs to read/write during post-backup)
+API_CREDS_FILE="/home/${ADMIN_USER}/.fmos_api_creds"
+LOG_FILE="/home/${ADMIN_USER}/loadavg_check_manager.log"
 
 # Logging control - set to 1 to disable logging, can be overridden by environment variable
 NO_LOG="${NO_LOG:-0}"
@@ -70,7 +78,7 @@ done
 # API Configuration
 API_BASE_URL="https://localhost:55555/api"
 API_COOKIE_FILE="/tmp/.fmos_api_cookie_$$"
-API_CREDS_FILE="${SCRIPT_DIR}/.fmos_api_creds"
+# Note: API_CREDS_FILE is set after ADMIN_USER detection
 
 # Function to call FMOS API
 # Uses curl with session cookies to interact with the Control Panel API
