@@ -319,46 +319,15 @@ bash /home/admin/manage_loadavg_check.sh setup
 
 The latest version uses `/usr/bin/env` to properly set environment variables for the FMOS backup system.
 
-#### Error: "/usr/bin/python3.12: can't open file '/home/firemon/manage_loadavg_check.py': [Errno 13] Permission denied"
+#### Error: "/bin/bash: /home/admin/manage_loadavg_check.sh: Permission denied"
 
-This is the most common error with the Python version. The issue is **SELinux** - it prevents root from executing scripts in user home directories.
+This is the most common error. The issue is **SELinux** - it prevents root from executing scripts in user home directories.
 
 **The Root Cause:**
 - SELinux is in **Enforcing** mode on FireMon OS
 - Scripts in home directories have `user_home_t` SELinux context
 - Root cannot execute files with this context during post-backup operations
 - File permissions (755) are not enough when SELinux is enforcing
-
-**The Fix - Move to Proper Location:**
-```bash
-# Move script to a location with proper SELinux context
-cd /var/lib/backup/firemon
-cp ~/manage_loadavg_check.py ./
-chmod 755 ./manage_loadavg_check.py
-
-# Re-run setup from the new location (IMPORTANT!)
-python3.12 ./manage_loadavg_check.py setup
-
-# This will reconfigure the post-backup hook to use the new path
-# Test the backup
-fmos backup
-```
-
-**Why `/var/lib/backup/firemon/` works:**
-- Has `firemon_backup_t` SELinux context (not `user_home_t`)
-- Root can execute scripts from this location
-- Won't be cleaned up on reboot (unlike /tmp)
-- Logically related to backup operations
-
-After moving and re-running setup, the backup should succeed with: "✓ Backup completed successfully"
-
-**Alternative locations that work:**
-- `/var/tmp/` - Has `tmp_t` context, but may be cleaned up
-- `/opt/` - Requires root to write, but has `usr_t` context
-
-#### Error: "/bin/bash: /home/admin/manage_loadavg_check.sh: Permission denied" (Bash version)
-
-This error occurs when the bash script is in a home directory. The issue is **SELinux** - same as with the Python version.
 
 **The Fix - Move to Proper Location:**
 ```bash

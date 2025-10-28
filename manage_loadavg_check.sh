@@ -39,14 +39,11 @@ detect_admin_user() {
         detected_user=$(echo "$SCRIPT_DIR" | grep -oP '(?<=/home/)[^/]+' | head -1)
     fi
 
-    # Method 4: Look for common admin usernames first (admin, adam)
+    # Method 4: Look for common admin username (admin)
     if [ -z "$detected_user" ]; then
-        for preferred_user in admin adam; do
-            if [ -d "/home/$preferred_user" ]; then
-                detected_user="$preferred_user"
-                break
-            fi
-        done
+        if [ -d "/home/admin" ]; then
+            detected_user="admin"
+        fi
     fi
 
     # Method 5: Look for real login users in /home (skip system users)
